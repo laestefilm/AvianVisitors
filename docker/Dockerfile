@@ -1,9 +1,9 @@
 FROM python:3.12-slim AS adapter
 
 WORKDIR /adapter
-COPY adapter/requirements.txt .
+COPY docker/adapter/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY adapter/ .
+COPY docker/adapter/ .
 
 FROM nginx:1.27-alpine
 
