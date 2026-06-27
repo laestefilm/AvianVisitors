@@ -1,0 +1,14 @@
+.env.example
+docker-compose.override.yml
+**/__pycache__
+**/*.pyc
+.git
+.github
+frame/
+scripts/
+homepage/
+model/
+templates/
+docs/
+*.md
+!avian/scripts/prompt.template.md

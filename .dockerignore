@@ -1,0 +1,10 @@
+.git
+.github
+frame/
+scripts/
+homepage/
+model/
+templates/
+docs/
+**/__pycache__
+**/*.pyc
