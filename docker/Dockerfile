@@ -1,27 +1,24 @@
-FROM python:3.12-slim AS adapter
+# Debian-based final image — Alpine's Python 3.12 + pip hits a broken pyexpat.
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nginx curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/nginx/sites-enabled/default \
+    && mkdir -p /data/generated /var/cache/nginx /app/avian/scripts
 
 WORKDIR /adapter
 COPY docker/adapter/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY docker/adapter/ .
 
-FROM nginx:1.27-alpine
-
-RUN apk add --no-cache python3 py3-pip curl \
-    && pip3 install --no-cache-dir --break-system-packages \
-        fastapi==0.115.12 uvicorn[standard]==0.34.2 httpx==0.28.1 python-multipart==0.0.20 Pillow==11.2.1
-
-COPY --from=adapter /adapter /adapter
-
-# Frontend static assets + bundled illustrations
 COPY avian/frontend /usr/share/nginx/html
 COPY avian/assets /app/avian/assets
 COPY avian/scripts/prompt.template.md /app/avian/scripts/prompt.template.md
 
 COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf.template
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh \
-    && mkdir -p /data/generated /var/cache/nginx
+RUN chmod +x /entrypoint.sh
 
 ENV BIRDNET_GO_URL=http://host.docker.internal:8180 \
     BASE_PATH=/collage \
