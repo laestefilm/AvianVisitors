@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 
+log = logging.getLogger("bng_client")
+
 BIRDNET_GO_URL = os.environ.get("BIRDNET_GO_URL", "http://host.docker.internal:8180").rstrip("/")
 API = f"{BIRDNET_GO_URL}/api/v2"
 TIMEOUT = float(os.environ.get("BNG_HTTP_TIMEOUT", "30"))
+MAX_LIMIT = int(os.environ.get("BNG_MAX_LIMIT", "500"))
 
 
 def _client() -> httpx.Client:
@@ -34,8 +38,12 @@ def _as_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _today_local() -> date:
+    return datetime.now().date()
+
+
 def _parse_ts(det: dict[str, Any]) -> datetime | None:
-    for key in ("timestamp", "dateTime", "date"):
+    for key in ("timestamp", "dateTime", "datetime"):
         raw = det.get(key)
         if not raw:
             continue
@@ -45,62 +53,95 @@ def _parse_ts(det: dict[str, Any]) -> datetime | None:
         try:
             return datetime.fromisoformat(text)
         except ValueError:
-            if "T" not in text and len(text) >= 10:
-                try:
-                    return datetime.fromisoformat(text[:10] + "T00:00:00")
-                except ValueError:
-                    pass
+            continue
+    d = det.get("date")
+    if d:
+        t = det.get("time") or "00:00:00"
+        try:
+            return datetime.fromisoformat(f"{str(d)[:10]}T{t}")
+        except ValueError:
+            try:
+                return datetime.fromisoformat(str(d)[:10] + "T00:00:00")
+            except ValueError:
+                pass
     return None
 
 
 def norm_detection(det: dict[str, Any]) -> dict[str, Any]:
     ts = _parse_ts(det)
-    at = ts.isoformat() if ts else None
     d = ts.date().isoformat() if ts else (str(det.get("date") or "")[:10] or None)
-    t = ts.strftime("%H:%M:%S") if ts else None
+    t = ts.strftime("%H:%M:%S") if ts else (str(det.get("time") or "")[:8] or None)
     return {
         "id": det.get("id"),
         "sci": det.get("scientificName") or det.get("scientific_name") or "",
         "com": det.get("commonName") or det.get("common_name") or "",
         "conf": float(det.get("confidence") or 0),
         "clip": det.get("clipName") or det.get("clip_name"),
-        "at": at,
+        "at": ts.isoformat() if ts else None,
         "d": d,
         "t": t,
         "ts": ts,
     }
 
 
-def fetch_recent(limit: int = 500) -> list[dict[str, Any]]:
+def fetch_recent(limit: int | None = None) -> list[dict[str, Any]]:
+    lim = min(limit or MAX_LIMIT, MAX_LIMIT)
     with _client() as c:
-        r = c.get(f"{API}/detections/recent", params={"limit": limit})
+        r = c.get(f"{API}/detections/recent", params={"limit": lim})
         r.raise_for_status()
         return [norm_detection(d) for d in _as_list(r.json())]
 
 
 def fetch_detections(
     *,
-    start: datetime | None = None,
-    end: datetime | None = None,
-    limit: int = 2000,
+    start: datetime | date | None = None,
+    end: datetime | date | None = None,
+    limit: int | None = None,
+    species: str = "",
 ) -> list[dict[str, Any]]:
-    params: dict[str, Any] = {"limit": limit}
-    if start:
-        params["start_date"] = start.date().isoformat()
-    if end:
-        params["end_date"] = end.date().isoformat()
+    """BirdNET-Go requires start_date AND end_date together when either is set."""
+    lim = min(limit or MAX_LIMIT, MAX_LIMIT)
+    params: dict[str, Any] = {"limit": lim}
+    if species:
+        params["species"] = species
+
+    start_d = start.date() if isinstance(start, datetime) else start
+    end_d = end.date() if isinstance(end, datetime) else end
+    if start_d or end_d:
+        if not end_d:
+            end_d = _today_local()
+        if not start_d:
+            start_d = end_d - timedelta(days=30)
+        params["start_date"] = start_d.isoformat()
+        params["end_date"] = end_d.isoformat()
+
     with _client() as c:
         r = c.get(f"{API}/detections", params=params)
         r.raise_for_status()
         return [norm_detection(d) for d in _as_list(r.json())]
 
 
-def fetch_in_hours(hours: int, limit: int = 2000) -> list[dict[str, Any]]:
+def fetch_in_hours(hours: int, limit: int | None = None) -> list[dict[str, Any]]:
+    lim = min(limit or MAX_LIMIT, MAX_LIMIT)
     if hours >= 1000000:
-        return fetch_detections(limit=limit)
-    since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    dets = fetch_detections(start=since, limit=limit)
-    return [d for d in dets if d.get("ts") and d["ts"] >= since]
+        return fetch_recent(lim)
+
+    since = datetime.now().replace(tzinfo=None) - timedelta(hours=hours)
+    dets = fetch_recent(lim)
+    filtered = []
+    for d in dets:
+        ts = d.get("ts")
+        if ts is None:
+            filtered.append(d)
+            continue
+        cmp_ts = ts.replace(tzinfo=None) if ts.tzinfo else ts
+        if cmp_ts >= since:
+            filtered.append(d)
+    if filtered:
+        return filtered
+
+    end = datetime.now()
+    return fetch_detections(start=since.date(), end=end.date(), limit=lim)
 
 
 def aggregate_species(dets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -120,7 +161,6 @@ def aggregate_species(dets: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "last_ts": None,
                 "top_file": None,
                 "top_at": None,
-                "top_id": None,
             }
             row = by_sci[sci]
         row["n"] += 1
@@ -128,7 +168,6 @@ def aggregate_species(dets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if conf >= row["best_conf"]:
             row["best_conf"] = conf
             row["top_file"] = d.get("clip") or str(d.get("id") or "")
-            row["top_id"] = d.get("id")
             if d.get("d") and d.get("t"):
                 row["top_at"] = f"{d['d']} {d['t']}"
         ts = d.get("ts")
@@ -138,19 +177,18 @@ def aggregate_species(dets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = list(by_sci.values())
     for row in out:
         row.pop("last_ts", None)
-        row.pop("top_id", None)
     out.sort(key=lambda r: r.get("last_seen") or "", reverse=True)
     return out
 
 
-def species_for_sci(sci: str, limit: int = 500) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    with _client() as c:
-        r = c.get(
-            f"{API}/detections",
-            params={"species": sci, "limit": limit},
-        )
-        r.raise_for_status()
-        dets = [norm_detection(d) for d in _as_list(r.json())]
+def species_for_sci(sci: str, limit: int | None = None) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    lim = min(limit or MAX_LIMIT, MAX_LIMIT)
+    end = _today_local()
+    start = end - timedelta(days=365)
+    try:
+        dets = fetch_detections(start=start, end=end, limit=lim, species=sci)
+    except httpx.HTTPError:
+        dets = [d for d in fetch_recent(lim) if d.get("sci") == sci]
     if not dets:
         return None, []
     dets.sort(key=lambda d: (d.get("d") or "", d.get("t") or ""), reverse=True)
@@ -169,7 +207,7 @@ def species_for_sci(sci: str, limit: int = 500) -> tuple[dict[str, Any] | None, 
 
 
 def fetch_daily_analytics(days: int = 30) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    end = datetime.now(timezone.utc).date()
+    end = _today_local()
     start = end - timedelta(days=days - 1)
     daily: list[dict[str, Any]] = []
     by_hour = [0] * 24
@@ -190,8 +228,8 @@ def fetch_daily_analytics(days: int = 30) -> tuple[list[dict[str, Any]], list[di
                             "species": int(row.get("species") or row.get("unique_species") or 0),
                         }
                     )
-        except httpx.HTTPError:
-            pass
+        except httpx.HTTPError as exc:
+            log.debug("analytics/time/daily failed: %s", exc)
         try:
             r = c.get(
                 f"{API}/analytics/time/distribution/hourly",
@@ -204,40 +242,54 @@ def fetch_daily_analytics(days: int = 30) -> tuple[list[dict[str, Any]], list[di
                     h = int(row.get("hour") if "hour" in row else row.get("h", 0))
                     if 0 <= h < 24:
                         by_hour[h] = int(row.get("detections") or row.get("count") or 0)
+        except httpx.HTTPError as exc:
+            log.debug("analytics hourly failed: %s", exc)
+
+    if not daily:
+        try:
+            dets = fetch_detections(start=start, end=end, limit=MAX_LIMIT)
+            buckets: dict[str, dict[str, set[str]]] = {}
+            for d in dets:
+                day = d.get("d")
+                if not day:
+                    continue
+                buckets.setdefault(day, {"n": set(), "species": set()})
+                buckets[day]["n"].add(str(d.get("id") or id(d)))
+                buckets[day]["species"].add(d.get("sci") or "")
+                if d.get("ts"):
+                    by_hour[d["ts"].hour] += 1
+            daily = [
+                {"date": day, "detections": len(v["n"]), "species": len(v["species"])}
+                for day, v in sorted(buckets.items())
+            ]
         except httpx.HTTPError:
             pass
-    if not daily:
-        dets = fetch_detections(start=datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc), limit=5000)
-        buckets: dict[str, dict[str, set[str]]] = {}
-        for d in dets:
-            day = d.get("d")
-            if not day:
-                continue
-            buckets.setdefault(day, {"n": set(), "species": set()})
-            buckets[day]["n"].add(d.get("id") or id(d))
-            buckets[day]["species"].add(d.get("sci") or "")
-            if d.get("ts"):
-                by_hour[d["ts"].hour] += 1
-        daily = [
-            {"date": day, "detections": len(v["n"]), "species": len(v["species"])}
-            for day, v in sorted(buckets.items())
-        ]
+
     hourly = [{"hour": h, "detections": by_hour[h]} for h in range(24)]
     return daily, hourly
 
 
 def fetch_lifelist() -> list[dict[str, Any]]:
+    end = _today_local()
+    start = end - timedelta(days=3650)
     with _client() as c:
         try:
-            r = c.get(f"{API}/analytics/species/summary")
+            r = c.get(
+                f"{API}/analytics/species/summary",
+                params={"start_date": start.isoformat(), "end_date": end.isoformat()},
+            )
             if r.is_success:
-                rows = _as_list(r.json()) if not isinstance(r.json(), dict) else r.json().get("species", [])
+                body = r.json()
+                rows = _as_list(body) if not isinstance(body, dict) else body.get("species", [])
                 out = []
                 for row in rows:
+                    sci = row.get("scientificName") or row.get("scientific_name") or row.get("sci")
+                    if not sci:
+                        continue
                     out.append(
                         {
-                            "sci": row.get("scientificName") or row.get("sci"),
-                            "com": row.get("commonName") or row.get("com"),
+                            "sci": sci,
+                            "com": row.get("commonName") or row.get("common_name") or row.get("com") or sci,
                             "first_seen": row.get("firstSeen") or row.get("first_seen"),
                             "last_seen": row.get("lastSeen") or row.get("last_seen"),
                             "n": int(row.get("count") or row.get("detections") or row.get("n") or 0),
@@ -246,9 +298,10 @@ def fetch_lifelist() -> list[dict[str, Any]]:
                     )
                 if out:
                     return out
-        except httpx.HTTPError:
-            pass
-    dets = fetch_detections(limit=5000)
+        except httpx.HTTPError as exc:
+            log.debug("species/summary failed: %s", exc)
+
+    dets = fetch_recent(MAX_LIMIT)
     species = aggregate_species(dets)
     lifelist = []
     for s in species:

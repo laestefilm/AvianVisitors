@@ -62,9 +62,9 @@ def birdnet_api(
         if action == "stats":
             lifelist = fetch_lifelist()
             today = datetime.now().date().isoformat()
-            recent_day = fetch_in_hours(24, limit=3000)
-            recent_hour = fetch_in_hours(1, limit=500)
-            week = fetch_in_hours(24 * 7, limit=5000)
+            recent_day = fetch_in_hours(24)
+            recent_hour = fetch_in_hours(1)
+            week = fetch_in_hours(24 * 7)
             total_det = sum(int(s.get("n") or 0) for s in lifelist)
             first = min((s.get("first_seen") for s in lifelist if s.get("first_seen")), default=None)
             today_dets = [d for d in recent_day if d.get("d") == today]
