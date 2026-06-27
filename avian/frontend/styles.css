@@ -1590,3 +1590,5 @@
  * See avian/forwarding/. */
 body.av-local #dd-locked { display: none; }
 body.av-local #dd-items  { display: block; }
+body.av-collage-only #menu-dd,
+body.av-collage-only .menu-btn { display: none !important; }

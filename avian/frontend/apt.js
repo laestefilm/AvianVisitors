@@ -16,6 +16,9 @@
   // Optional runtime config (injected by docker/entrypoint.sh for BirdNET-Go).
   var CFG = (typeof window !== 'undefined' && window.AVIAN_CONFIG) || {};
   var API_BASE = String(CFG.apiBase || './avian/api').replace(/\/$/, '');
+  if (CFG.basePath && API_BASE.indexOf('./') === 0) {
+    API_BASE = String(CFG.basePath).replace(/\/$/, '') + '/api';
+  }
   var COLLAGE_ONLY = !!CFG.collageOnly;
   function avianApi(path) {
     return API_BASE + '/' + String(path || '').replace(/^\//, '');
@@ -58,8 +61,12 @@
   // ---- Slider ----
   var views = document.getElementById('views');
   var slider = document.getElementById('slider');
-  var btns = [].slice.call(slider.querySelectorAll('button'));
   var winPick = document.getElementById('winPick');
+  if (!views || !slider || !winPick) {
+    console.error('AvianVisitors: missing core DOM — is apt.js loading from the correct URL?');
+    return;
+  }
+  var btns = [].slice.call(slider.querySelectorAll('button'));
 
   // Each view's title text. The shared static-head shows one of these
   // based on the current view; identical adjacent values mean the title
@@ -1375,12 +1382,14 @@
       DATA.lifelist = parts[1];
       DATA.timeseries = parts[2];
       DATA.firstseen = parts[3];
-      // Only accept the recent slice if the window hasn't changed
-      // since this poll started - otherwise keep what's there.
       if (forHours === currentHours && parts[4]) DATA.recent = parts[4];
-      recomputeDerived();
-      renderTimeIndependent(animate);
-      renderCollageFromData(animate);
+      try {
+        recomputeDerived();
+        renderTimeIndependent(animate);
+        renderCollageFromData(animate);
+      } catch (err) {
+        console.error('AvianVisitors render failed', err);
+      }
     });
   }
 
@@ -1454,12 +1463,18 @@
   if (COLLAGE_ONLY && menuBtn) {
     menuBtn.style.display = 'none';
   }
-  function openDd()  { dd.classList.add('open'); dd.setAttribute('aria-hidden','false'); setTimeout(function () { document.getElementById('lockPass').focus(); }, 100); }
-  function closeDd() { dd.classList.remove('open'); dd.setAttribute('aria-hidden','true'); }
-  function toggleDd(){ dd.classList.contains('open') ? closeDd() : openDd(); }
-  menuBtn.addEventListener('click', function (e) { e.stopPropagation(); toggleDd(); });
-  document.addEventListener('click', function (e) { if (!dd.contains(e.target) && e.target !== menuBtn) closeDd(); });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeDd(); });
+  if (COLLAGE_ONLY && dd) {
+    dd.style.display = 'none';
+  }
+  function openDd()  { if (COLLAGE_ONLY) return; dd.classList.add('open'); dd.setAttribute('aria-hidden','false'); setTimeout(function () { document.getElementById('lockPass').focus(); }, 100); }
+  function closeDd() { if (COLLAGE_ONLY) return; dd.classList.remove('open'); dd.setAttribute('aria-hidden','true'); }
+  function toggleDd(){ if (COLLAGE_ONLY) return; dd.classList.contains('open') ? closeDd() : openDd(); }
+  if (menuBtn) menuBtn.addEventListener('click', function (e) { e.stopPropagation(); toggleDd(); });
+  document.addEventListener('click', function (e) {
+    if (COLLAGE_ONLY) return;
+    if (!dd.contains(e.target) && e.target !== menuBtn) closeDd();
+  });
+  document.addEventListener('keydown', function (e) { if (!COLLAGE_ONLY && e.key === 'Escape') closeDd(); });
 
   // Probe menu.php with no Authorization header. On a LAN deploy
   // (AV_REQUIRE_AUTH=0) it returns 200 immediately so the drawer
@@ -2906,7 +2921,7 @@
     }
     var ctx = getSpecCtx();
     if (!ctx) { fail('WebAudio not available'); return; }
-    fetch(avianApi('recording.php?file=' + encodeURIComponent(file))
+    fetch(avianApi('recording.php?file=' + encodeURIComponent(file)))
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.arrayBuffer();
