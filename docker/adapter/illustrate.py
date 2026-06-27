@@ -8,9 +8,12 @@ import os
 import re
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger("illustrate")
 
@@ -21,9 +24,13 @@ WANGP_ROOT = os.environ.get("WANGP_ROOT", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 WANGP_MODEL = os.environ.get("WANGP_MODEL", "qwen_image_20B")
 WANGP_RESOLUTION = os.environ.get("WANGP_RESOLUTION", "1024x1024")
+GENERATION_MAX_CONCURRENT = max(1, int(os.environ.get("GENERATION_MAX_CONCURRENT", "2")))
+ILLUSTRATION_BACKFILL = os.environ.get("ILLUSTRATION_BACKFILL", "1").lower() in ("1", "true", "yes")
+ILLUSTRATION_BACKFILL_INTERVAL = max(0, int(os.environ.get("ILLUSTRATION_BACKFILL_INTERVAL", "3600")))
 
 _lock = threading.Lock()
 _inflight: set[str] = set()
+_gen_slots = threading.Semaphore(GENERATION_MAX_CONCURRENT)
 
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -53,11 +60,16 @@ def _load_prompt(sci: str, com: str, pose: str) -> str:
     return template.format(sci_name=sci, com_name=com, pose=pose)
 
 
+def generator_configured() -> bool:
+    return bool(WANGP_ROOT or GEMINI_API_KEY)
+
+
 def _generate_gemini(sci: str, com: str, pose: int, dest: Path) -> bool:
     if not GEMINI_API_KEY:
         return False
     pose_label = "perched" if pose == 1 else "in flight with wings spread"
     prompt = _load_prompt(sci, com, pose_label)
+    log.info("Gemini: generating illustration for %s (%s)", sci, com)
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
@@ -75,6 +87,8 @@ def _generate_gemini(sci: str, com: str, pose: int, dest: Path) -> bool:
         log.warning("Gemini generation failed for %s: %s", sci, exc)
         return False
     parts = payload.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    if not parts:
+        log.warning("Gemini: no image in response for %s", sci)
     for part in parts:
         inline = part.get("inlineData") or part.get("inline_data")
         if not inline:
@@ -134,10 +148,14 @@ def _generate_worker(sci: str, com: str, pose: int) -> None:
     suffix = "" if pose == 1 else f"-{pose}"
     dest = GENERATED_DIR / f"{slug}{suffix}.png"
     try:
-        if _generate_wangp(sci, com, pose, dest) or _generate_gemini(sci, com, pose, dest):
+        with _gen_slots:
+            ok = _generate_wangp(sci, com, pose, dest) or _generate_gemini(sci, com, pose, dest)
+        if ok:
             log.info("Generated illustration for %s pose=%s -> %s", sci, pose, dest)
+        elif not generator_configured():
+            log.info("Illustration skipped for %s (no GEMINI_API_KEY or WANGP_ROOT)", sci)
         else:
-            log.info("No generator available for %s", sci)
+            log.warning("Illustration generation failed for %s pose=%s", sci, pose)
     finally:
         with _lock:
             _inflight.discard(key)
@@ -151,9 +169,52 @@ def schedule_generation(sci: str, com: str = "", pose: int = 1) -> bool:
     with _lock:
         if key in _inflight:
             return True
-        if not WANGP_ROOT and not GEMINI_API_KEY:
+        if not generator_configured():
             return False
         _inflight.add(key)
+    log.info("Queued illustration for %s (%s) pose=%s", sci, com or sci, pose)
     thread = threading.Thread(target=_generate_worker, args=(sci, com or sci, pose), daemon=True)
     thread.start()
     return True
+
+
+def backfill_missing_illustrations(fetch_lifelist: Callable[[], list[dict[str, Any]]]) -> int:
+    """Scan lifelist and queue generation for species without bundled/generated art."""
+    if not generator_configured():
+        log.info("Illustration backfill skipped (set GEMINI_API_KEY or WANGP_ROOT to enable)")
+        return 0
+    try:
+        lifelist = fetch_lifelist()
+    except Exception as exc:
+        log.warning("Illustration backfill: lifelist fetch failed: %s", exc)
+        return 0
+    missing = [row for row in lifelist if row.get("sci") and not bundled_path(row["sci"], 1)]
+    if not missing:
+        log.info("Illustration backfill: all %d lifelist species have illustrations", len(lifelist))
+        return 0
+    log.info(
+        "Illustration backfill: queuing %d of %d species missing illustrations",
+        len(missing),
+        len(lifelist),
+    )
+    queued = 0
+    for row in missing:
+        if schedule_generation(row["sci"], row.get("com") or "", 1):
+            queued += 1
+    return queued
+
+
+def start_backfill_loop(fetch_lifelist: Callable[[], list[dict[str, Any]]]) -> None:
+    """Run backfill on startup and optionally on an interval (seconds)."""
+
+    def loop() -> None:
+        # Brief delay so BirdNET-Go is reachable before the first scan.
+        time.sleep(8)
+        while True:
+            backfill_missing_illustrations(fetch_lifelist)
+            if ILLUSTRATION_BACKFILL_INTERVAL <= 0:
+                break
+            time.sleep(ILLUSTRATION_BACKFILL_INTERVAL)
+
+    if ILLUSTRATION_BACKFILL:
+        threading.Thread(target=loop, name="illustration-backfill", daemon=True).start()

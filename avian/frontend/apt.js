@@ -20,8 +20,40 @@
     API_BASE = String(CFG.basePath).replace(/\/$/, '') + '/api';
   }
   var COLLAGE_ONLY = !!CFG.collageOnly;
+  var COLLAGE_GENERATED_ONLY = !!CFG.collageGeneratedOnly;
+  var illustratedSci = {};
   function avianApi(path) {
     return API_BASE + '/' + String(path || '').replace(/^\//, '');
+  }
+  function cutoutSrc(sci, com, pose, opts) {
+    opts = opts || {};
+    var base = avianApi('cutout.php?sci=') + encodeURIComponent(sci) +
+      (com ? '&com=' + encodeURIComponent(com) : '') +
+      (opts.generatedOnly ? '&generated_only=1' : '') +
+      '&v=' + (opts.version || IMG_VERSION);
+    var p = +pose || 1;
+    return p > 1 ? base + '&pose=' + p : base;
+  }
+
+  function refreshIllustrated() {
+    if (!COLLAGE_GENERATED_ONLY) return Promise.resolve(false);
+    return fetchJson(avianApi('birdnet-api.php?action=illustrated'))
+      .then(function (j) {
+        var next = {};
+        (j.ready || []).forEach(function (sci) { next[sci] = true; });
+        var grew = Object.keys(next).some(function (sci) { return !illustratedSci[sci]; });
+        illustratedSci = next;
+        return grew;
+      })
+      .catch(function (e) {
+        console.warn('illustrated fetch failed', e);
+        return false;
+      });
+  }
+
+  function collageItems(items) {
+    if (!COLLAGE_GENERATED_ONLY) return items;
+    return items.filter(function (s) { return illustratedSci[s.sci]; });
   }
 
   // ---- Sliding pill helper ----
@@ -581,10 +613,7 @@
       // com flows through so the worker's JIT Gemini job uses the right
       // common name in its prompt for a freshly-detected species.
       // &v=IMG_VERSION busts CF edge cache when we re-render any species.
-      var img = avianApi('cutout.php?sci=') + encodeURIComponent(s.sci) +
-        (s.com ? '&com=' + encodeURIComponent(s.com) : '') +
-        (r.pose === 2 ? '&pose=2' : '') +
-        '&v=' + IMG_VERSION;
+      var img = cutoutSrc(s.sci, s.com, r.pose === 2 ? 2 : 1, { generatedOnly: COLLAGE_GENERATED_ONLY });
       var btn = document.createElement('button');
       btn.className = 'gtile';
       btn.type = 'button';
@@ -821,7 +850,7 @@
   // changes, refreshRecent() refetches and re-renders. Empty state shows
   // a "no detections in this window" message.
   function renderCollageFromData(animate) {
-    var items = (DATA.recent && DATA.recent.species) || [];
+    var items = collageItems((DATA.recent && DATA.recent.species) || []);
     renderCollage(items, animate);
   }
   var rTimer;
@@ -1404,6 +1433,7 @@
       fetchJson(avianApi('birdnet-api.php?action=timeseries&days=30')).catch(function () { return null; }),
       fetchJson(avianApi('birdnet-api.php?action=firstseen&limit=10')).catch(function () { return null; }),
       fetchJson(avianApi('birdnet-api.php?action=recent&hours=' + forHours)).catch(function () { return null; }),
+      refreshIllustrated(),
     ]).then(function (parts) {
       DATA.stats = parts[0];
       DATA.lifelist = parts[1];
@@ -1424,6 +1454,15 @@
   // populates; until then the page sits with empty histograms + lists.
   // animate=true so the collage blooms in on first load.
   refreshAll(true);
+
+  if (COLLAGE_GENERATED_ONLY) {
+    setInterval(function () {
+      if (document.hidden) return;
+      refreshIllustrated().then(function (grew) {
+        if (grew) renderCollageFromData(true);
+      });
+    }, 45000);
+  }
 
   // Hook into the window picker so the data refetches on change. Pass
   // animate=true so the collage blooms (the silent poll passes nothing).

@@ -40,6 +40,9 @@ The adapter exposes the same JSON endpoints the Pi version uses (`birdnet-api.ph
 | `AVIAN_PORT` | `8182` | Host port for the collage container |
 | `BASE_PATH` | `/collage` | URL path prefix |
 | `GEMINI_API_KEY` | (empty) | Generate missing illustrations via Gemini |
+| `ILLUSTRATION_BACKFILL` | `1` | Scan lifelist on startup and queue missing art |
+| `ILLUSTRATION_BACKFILL_INTERVAL` | `3600` | Re-scan interval in seconds (`0` = startup only) |
+| `GENERATION_MAX_CONCURRENT` | `2` | Max parallel Gemini/WanGP jobs |
 | `WANGP_ROOT` | (empty) | Path to Wan2GP install inside container |
 | `WANGP_MODEL` | `qwen_image_20B` | WanGP model alias |
 
@@ -62,6 +65,17 @@ When a species has no bundled illustration:
 1. The adapter returns BirdNET-Go's species thumbnail immediately (if available).
 2. If `WANGP_ROOT` or `GEMINI_API_KEY` is set, it **queues background generation** using the same kachō-e prompt template as the Pi pipeline.
 3. Generated PNGs persist in the `avian-generated` Docker volume and are served on subsequent requests.
+
+Generation is **not** tied to new detections. It runs when:
+
+- Something requests `/cutout.php` for that species (collage, atlas, or stats tab), or
+- The **startup backfill** scans your BirdNET-Go **lifelist** (species you have actually detected, not every bird in the world) and queues any missing species (`ILLUSTRATION_BACKFILL=1`, default on).
+
+Backfill repeats every hour by default (`ILLUSTRATION_BACKFILL_INTERVAL=3600`). Set to `0` for startup-only.
+
+On the collage view (`collageGeneratedOnly`), only bundled or Gemini-generated PNGs are shown — BirdNET-Go thumbnail fallbacks are used on atlas/stats only, not the collage.
+
+Check progress: `docker logs avian-collage 2>&1 | grep -iE 'illustration|gemini|queued'`
 
 ### WanGP (Wan2GP)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,12 +28,33 @@ from bng_client import (
     proxy_species_image,
     species_for_sci,
 )
-from illustrate import bundled_path, schedule_generation
+from illustrate import (
+    GEMINI_API_KEY,
+    bundled_path,
+    generator_configured,
+    schedule_generation,
+    start_backfill_loop,
+)
 
 log = logging.getLogger("adapter")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 
-app = FastAPI(title="AvianVisitors BirdNET-Go Adapter", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if generator_configured():
+        log.info(
+            "Illustration generation enabled (gemini=%s, wangp=%s)",
+            "yes" if GEMINI_API_KEY else "no",
+            "yes" if os.environ.get("WANGP_ROOT", "").strip() else "no",
+        )
+        start_backfill_loop(fetch_lifelist)
+    else:
+        log.info("Illustration generation disabled (no GEMINI_API_KEY or WANGP_ROOT)")
+    yield
+
+
+app = FastAPI(title="AvianVisitors BirdNET-Go Adapter", version="1.0.0", lifespan=lifespan)
 
 BASE_PATH = os.environ.get("BASE_PATH", "/collage").rstrip("/")
 
@@ -109,6 +131,11 @@ def birdnet_api(
             rows.sort(key=lambda r: r.get("first_seen") or "", reverse=True)
             return JSONResponse({"species": rows[:limit], "as_of": as_of})
 
+        if action == "illustrated":
+            rows = fetch_lifelist()
+            ready = [r["sci"] for r in rows if r.get("sci") and bundled_path(r["sci"], 1)]
+            return JSONResponse({"ready": ready, "as_of": as_of})
+
         raise HTTPException(status_code=400, detail=f"unknown action: {action}")
     except httpx.HTTPError as exc:
         log.exception("BirdNET-Go request failed")
@@ -120,6 +147,7 @@ def cutout(
     sci: str = Query(..., min_length=3),
     pose: int = Query(1, ge=1, le=99),
     com: str = Query(""),
+    generated_only: bool = Query(False),
 ) -> Response:
     if not sci.replace(" ", "").replace(".", "").isalnum():
         raise HTTPException(status_code=400, detail="invalid sci")
@@ -131,16 +159,17 @@ def cutout(
         if path:
             return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
     queued = schedule_generation(sci, com, pose)
-    try:
-        upstream = proxy_species_image(sci)
-        if upstream.is_success and upstream.content:
-            headers = {"Cache-Control": "public, max-age=300"}
-            if queued:
-                headers["X-Avian-Generate"] = "queued"
-            ctype = upstream.headers.get("content-type", "image/png")
-            return Response(content=upstream.content, media_type=ctype, headers=headers)
-    except httpx.HTTPError:
-        pass
+    if not generated_only:
+        try:
+            upstream = proxy_species_image(sci)
+            if upstream.is_success and upstream.content:
+                headers = {"Cache-Control": "public, max-age=300"}
+                if queued:
+                    headers["X-Avian-Generate"] = "queued"
+                ctype = upstream.headers.get("content-type", "image/png")
+                return Response(content=upstream.content, media_type=ctype, headers=headers)
+        except httpx.HTTPError:
+            pass
     if queued:
         raise HTTPException(status_code=202, detail="illustration generation queued")
     raise HTTPException(status_code=404, detail="no illustration")

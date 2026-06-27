@@ -87,6 +87,7 @@ config_js = f"""window.AVIAN_CONFIG = {{
   "apiBase": "{api_base}",
   "sseUrl": "{sse_url}",
   "collageOnly": {str(collage_only).lower()},
+  "collageGeneratedOnly": {str(collage_only).lower()},
   "fullRefreshMs": {full_refresh},
   "basePath": "{base or '/'}"
 }};
