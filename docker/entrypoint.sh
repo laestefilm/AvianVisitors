@@ -112,6 +112,7 @@ html = re.sub(
 )
 if collage_only:
     html = html.replace('class="av-local"', 'class="av-local av-collage-only"', 1)
+    html = html.replace('id="themeBtn" type="button" hidden', 'id="themeBtn" type="button"', 1)
 html_path.write_text(html, encoding="utf-8")
 PY
 

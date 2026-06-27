@@ -132,6 +132,16 @@
   }
   .menu-btn:hover { transform: translateY(-1px); }
   .menu-btn:active { transform: translateY(0); }
+  .theme-btn {
+    background: var(--paper); border: 0; color: var(--ink);
+    font: 11px/1 ui-monospace, Menlo, monospace; padding: 9px 14px 8px;
+    border-radius: 999px; cursor: pointer; letter-spacing: 0.18em; text-transform: lowercase;
+    box-shadow: var(--raised);
+    transition: transform 160ms ease;
+  }
+  .theme-btn:hover { transform: translateY(-1px); }
+  .theme-btn:active { transform: translateY(0); }
+  .theme-btn[hidden] { display: none !important; }
   /* Compact top bar on mobile - the time-window pill goes from
      spacious to thumb-tight without losing legibility. */
   @media (max-width: 700px) {

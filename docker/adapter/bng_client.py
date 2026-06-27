@@ -327,8 +327,13 @@ def proxy_audio_by_id(detection_id: str) -> httpx.Response:
 
 
 def proxy_species_image(sci: str) -> httpx.Response:
+    from urllib.parse import quote
+
     with _client() as c:
-        return c.get(f"{API}/media/species-image", params={"scientificName": sci})
+        r = c.get(f"{API}/media/species-image", params={"name": sci})
+        if r.is_success and r.content:
+            return r
+        return c.get(f"{API}/media/image/{quote(sci, safe='')}")
 
 
 def health_ok() -> bool:

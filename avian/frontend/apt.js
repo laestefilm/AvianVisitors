@@ -160,6 +160,18 @@
     return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
   }
   applyTheme(readLS('bird:theme', 'light'));
+  var themeBtn = document.getElementById('themeBtn');
+  if (themeBtn) {
+    function syncThemeBtn() {
+      themeBtn.textContent = currentTheme() === 'dark' ? 'light' : 'dark';
+      themeBtn.setAttribute('aria-label', currentTheme() === 'dark' ? 'switch to light mode' : 'switch to dark mode');
+    }
+    syncThemeBtn();
+    themeBtn.addEventListener('click', function () {
+      applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+      syncThemeBtn();
+    });
+  }
   var winBtns = [].slice.call(winPick.querySelectorAll('button'));
   var currentHours = +readLS('bird:window', '24') || 24;
   winBtns.forEach(function (b) {
@@ -272,13 +284,29 @@
   var collagePose = {}; // sci -> 1 perched | 2 flight, persisted across polls;
                         // cleared when a bird leaves the window so it rerolls.
 
+  function defaultMask(w, h) {
+    var cells = [];
+    var cx = (w - 1) / 2;
+    var cy = (h - 1) / 2;
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var nx = (x - cx) / (w / 2);
+        var ny = (y - cy) / (h / 2);
+        if (nx * nx + ny * ny <= 1) cells.push([x, y]);
+      }
+    }
+    return { w: w, h: h, cells: cells };
+  }
+
   // Decode and cache each mask once. Sparse cell-list form (only "on"
   // cells) makes collision tests linear in opaque area, not total area.
+  // Species without a bundled mask get a generic oval so they still
+  // appear in the collage (common when paired with BirdNET-Go).
   var maskCache = {};
   function loadMask(slug) {
     if (maskCache[slug]) return maskCache[slug];
     var rec = MASKS[slug];
-    if (!rec) return null;
+    if (!rec) return (maskCache[slug] = defaultMask(24, 32));
     var bytes = atob(rec.bits);
     var w = rec.w, h = rec.h;
     var cells = [];
@@ -458,7 +486,6 @@
       var slug = pose === 2 ? base + '-2' : base;
       var mask = loadMask(slug);
       if (!mask && pose === 2) { pose = 1; slug = base; mask = loadMask(slug); collagePose[s.sci] = 1; }
-      if (!mask) return null;
       var d = DIMS[slug];
       var n = +s.n; if (!n || isNaN(n)) n = 1;
       return {
@@ -1457,11 +1484,15 @@
   // ---- Menu dropdown ----
   var dd = document.getElementById('menu-dd');
   var menuBtn = document.getElementById('menuBtn');
+  themeBtn = document.getElementById('themeBtn');
   var locked  = document.getElementById('dd-locked');
   var items   = document.getElementById('dd-items');
   var lockHint= document.getElementById('lockHint');
   if (COLLAGE_ONLY && menuBtn) {
     menuBtn.style.display = 'none';
+  }
+  if (COLLAGE_ONLY && themeBtn) {
+    themeBtn.hidden = false;
   }
   if (COLLAGE_ONLY && dd) {
     dd.style.display = 'none';
