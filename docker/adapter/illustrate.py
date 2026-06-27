@@ -19,7 +19,9 @@ log = logging.getLogger("illustrate")
 
 ILLUSTRATIONS_DIR = Path(os.environ.get("ILLUSTRATIONS_DIR", "/app/avian/assets/illustrations"))
 GENERATED_DIR = Path(os.environ.get("GENERATED_DIR", "/data/generated"))
-PROMPT_TEMPLATE = Path(os.environ.get("PROMPT_TEMPLATE", "/app/avian/scripts/prompt.template.md"))
+PROMPT_TEMPLATE = Path(
+    os.environ.get("PROMPT_TEMPLATE", str(Path(__file__).resolve().parent / "prompt.docker.md"))
+)
 WANGP_ROOT = os.environ.get("WANGP_ROOT", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 WANGP_MODEL = os.environ.get("WANGP_MODEL", "qwen_image_20B")
@@ -32,9 +34,17 @@ _lock = threading.Lock()
 _inflight: set[str] = set()
 _gen_slots = threading.Semaphore(GENERATION_MAX_CONCURRENT)
 
+_PROMPT_SECTION = re.compile(r"##\s*Prompt\s*\n(.+?)(?=\n##\s|\Z)", re.DOTALL)
+
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "gemini-2.5-flash-image:generateContent"
+)
+
+_FALLBACK_PROMPT = (
+    "Generate a {pose} {com_name} ({sci_name}) as an Edo-period Japanese kachō-e "
+    "woodblock print on a warm cream paper background. Transparent background, bird only, "
+    "no branch or scenery. Flat watercolor washes, confident ink outlines."
 )
 
 
@@ -54,10 +64,20 @@ def bundled_path(sci: str, pose: int = 1) -> Path | None:
 
 
 def _load_prompt(sci: str, com: str, pose: str) -> str:
-    template = PROMPT_TEMPLATE.read_text(encoding="utf-8") if PROMPT_TEMPLATE.is_file() else (
-        "Scientific illustration of {com_name} ({sci_name}), {pose}, on a flat cream background."
+    """Build the Gemini prompt. Uses .replace() — never .format() — because the
+    Pi prompt template contains many literal braces ({anti_ref_line}, etc.)."""
+    if PROMPT_TEMPLATE.is_file():
+        text = PROMPT_TEMPLATE.read_text(encoding="utf-8")
+        match = _PROMPT_SECTION.search(text)
+        template = (match.group(1) if match else text).strip()
+    else:
+        template = _FALLBACK_PROMPT
+    return (
+        template.replace("{sci_name}", sci)
+        .replace("{com_name}", com)
+        .replace("{pose}", pose)
+        .replace("{anti_ref_line}", "")
     )
-    return template.format(sci_name=sci, com_name=com, pose=pose)
 
 
 def generator_configured() -> bool:
@@ -68,7 +88,11 @@ def _generate_gemini(sci: str, com: str, pose: int, dest: Path) -> bool:
     if not GEMINI_API_KEY:
         return False
     pose_label = "perched" if pose == 1 else "in flight with wings spread"
-    prompt = _load_prompt(sci, com, pose_label)
+    try:
+        prompt = _load_prompt(sci, com, pose_label)
+    except Exception as exc:
+        log.warning("Prompt build failed for %s: %s", sci, exc)
+        return False
     log.info("Gemini: generating illustration for %s (%s)", sci, com)
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -83,8 +107,15 @@ def _generate_gemini(sci: str, com: str, pose: int, dest: Path) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:800]
+        log.warning("Gemini HTTP %s for %s: %s", exc.code, sci, detail)
+        return False
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        log.warning("Gemini generation failed for %s: %s", sci, exc)
+        log.warning("Gemini request failed for %s: %s", sci, exc)
+        return False
+    if payload.get("error"):
+        log.warning("Gemini API error for %s: %s", sci, payload["error"])
         return False
     parts = payload.get("candidates", [{}])[0].get("content", {}).get("parts", [])
     if not parts:
@@ -107,7 +138,11 @@ def _generate_wangp(sci: str, com: str, pose: int, dest: Path) -> bool:
     if not root.is_dir():
         return False
     pose_label = "perched" if pose == 1 else "in flight with wings spread"
-    prompt = _load_prompt(sci, com, pose_label)
+    try:
+        prompt = _load_prompt(sci, com, pose_label)
+    except Exception as exc:
+        log.warning("Prompt build failed for %s: %s", sci, exc)
+        return False
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     try:
@@ -156,6 +191,8 @@ def _generate_worker(sci: str, com: str, pose: int) -> None:
             log.info("Illustration skipped for %s (no GEMINI_API_KEY or WANGP_ROOT)", sci)
         else:
             log.warning("Illustration generation failed for %s pose=%s", sci, pose)
+    except Exception:
+        log.exception("Illustration worker crashed for %s pose=%s", sci, pose)
     finally:
         with _lock:
             _inflight.discard(key)

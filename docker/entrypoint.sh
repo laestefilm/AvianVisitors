@@ -119,7 +119,7 @@ PY
 
 export ILLUSTRATIONS_DIR="${ILLUSTRATIONS_DIR:-/app/avian/assets/illustrations}"
 export GENERATED_DIR="${GENERATED_DIR:-/data/generated}"
-export PROMPT_TEMPLATE="${PROMPT_TEMPLATE:-/app/avian/scripts/prompt.template.md}"
+export PROMPT_TEMPLATE="${PROMPT_TEMPLATE:-/adapter/prompt.docker.md}"
 
 cd /adapter
 python3 -m uvicorn main:app --host 127.0.0.1 --port "${ADAPTER_PORT:-8090}" &
