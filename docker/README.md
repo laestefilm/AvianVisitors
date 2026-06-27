@@ -11,9 +11,13 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Open: **http://192.168.50.108:8182/collage/**
+Open: **http://192.168.50.108:8182/** (default — served at container root)
+
+Or with subpath: set `BASE_PATH=/collage` in `.env` → **http://192.168.50.108:8182/collage/** (note trailing slash)
 
 BirdNET-Go dashboard (unchanged): **http://192.168.50.108:8180/**
+
+**Do not** open `http://192.168.50.108:8180/collage/` unless you add a reverse proxy — BirdNET-Go does not serve that path and will return 404.
 
 ## How it works
 

@@ -1,6 +1,7 @@
 # AvianVisitors collage frontend for BirdNET-Go
 #
-# Access: http://<host>:8182/collage/
+# Default URL: http://<host>:8182/
+# Optional subpath: set BASE_PATH=/collage -> http://<host>:8182/collage/
 # BirdNET-Go UI stays at http://<host>:8180/
 
 services:
@@ -14,18 +15,17 @@ services:
       - "${AVIAN_PORT:-8182}:80"
     environment:
       BIRDNET_GO_URL: ${BIRDNET_GO_URL:-http://host.docker.internal:8180}
-      BASE_PATH: ${BASE_PATH:-/collage}
+      # Leave empty to serve at http://host:8182/ (recommended on dedicated port).
+      # Set to /collage if you prefer a subpath on this port.
+      BASE_PATH: ${BASE_PATH:-}
       COLLAGE_ONLY: "1"
       FULL_REFRESH_MS: "300000"
-      # Optional: on-demand illustration generation for missing species
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       WANGP_ROOT: ${WANGP_ROOT:-}
       WANGP_MODEL: ${WANGP_MODEL:-qwen_image_20B}
       WANGP_RESOLUTION: ${WANGP_RESOLUTION:-1024x1024}
     volumes:
       - avian-generated:/data/generated
-      # Optional: mount your local WanGP install (read-only is enough for API import)
-      # - /path/to/Wan2GP:/wangp:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
