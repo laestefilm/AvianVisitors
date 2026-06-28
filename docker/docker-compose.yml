@@ -24,13 +24,17 @@ services:
       ILLUSTRATION_BACKFILL: ${ILLUSTRATION_BACKFILL:-1}
       ILLUSTRATION_BACKFILL_INTERVAL: ${ILLUSTRATION_BACKFILL_INTERVAL:-3600}
       GENERATION_MAX_CONCURRENT: ${GENERATION_MAX_CONCURRENT:-2}
+      ILLUSTRATION_CUTOUT: ${ILLUSTRATION_CUTOUT:-1}
+      USE_ANTI_REF: ${USE_ANTI_REF:-1}
       WANGP_ROOT: ${WANGP_ROOT:-}
       WANGP_MODEL: ${WANGP_MODEL:-qwen_image_20B}
       WANGP_RESOLUTION: ${WANGP_RESOLUTION:-1024x1024}
     volumes:
       - avian-generated:/data/generated
+      - avian-refs-cache:/data/references
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
 volumes:
   avian-generated:
+  avian-refs-cache:

@@ -119,7 +119,12 @@ PY
 
 export ILLUSTRATIONS_DIR="${ILLUSTRATIONS_DIR:-/app/avian/assets/illustrations}"
 export GENERATED_DIR="${GENERATED_DIR:-/data/generated}"
-export PROMPT_TEMPLATE="${PROMPT_TEMPLATE:-/adapter/prompt.docker.md}"
+export REF_CACHE_DIR="${REF_CACHE_DIR:-/data/references}"
+export REFS_DIR="${REFS_DIR:-/app/avian/assets/references}"
+export STYLES_DIR="${STYLES_DIR:-/app/avian/assets/references/styles}"
+export PROMPT_TEMPLATE="${PROMPT_TEMPLATE:-/app/avian/scripts/prompt.template.md}"
+export ILLUSTRATION_CUTOUT="${ILLUSTRATION_CUTOUT:-1}"
+export USE_ANTI_REF="${USE_ANTI_REF:-1}"
 
 cd /adapter
 python3 -m uvicorn main:app --host 127.0.0.1 --port "${ADAPTER_PORT:-8090}" &

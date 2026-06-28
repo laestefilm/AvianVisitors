@@ -14,6 +14,7 @@ COPY docker/adapter/ .
 
 COPY avian/frontend /usr/share/nginx/html
 COPY avian/assets /app/avian/assets
+COPY avian/scripts/prompt.template.md /app/avian/scripts/prompt.template.md
 
 COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf.template
 COPY docker/entrypoint.sh /entrypoint.sh

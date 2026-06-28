@@ -43,6 +43,8 @@ The adapter exposes the same JSON endpoints the Pi version uses (`birdnet-api.ph
 | `ILLUSTRATION_BACKFILL` | `1` | Scan lifelist on startup and queue missing art |
 | `ILLUSTRATION_BACKFILL_INTERVAL` | `3600` | Re-scan interval in seconds (`0` = startup only) |
 | `GENERATION_MAX_CONCURRENT` | `2` | Max parallel Gemini/WanGP jobs |
+| `ILLUSTRATION_CUTOUT` | `1` | Auto-remove cream ground via rembg after Gemini |
+| `USE_ANTI_REF` | `1` | Attach lookalike anti-refs when bundled files exist |
 | `WANGP_ROOT` | (empty) | Path to Wan2GP install inside container |
 | `WANGP_MODEL` | `qwen_image_20B` | WanGP model alias |
 
@@ -62,9 +64,48 @@ Bundled kachō-e PNGs ship inside the image under `/app/avian/assets/illustratio
 
 When a species has no bundled illustration:
 
-1. The adapter returns BirdNET-Go's species thumbnail immediately (if available).
-2. If `WANGP_ROOT` or `GEMINI_API_KEY` is set, it **queues background generation** using the same kachō-e prompt template as the Pi pipeline.
-3. Generated PNGs persist in the `avian-generated` Docker volume and are served on subsequent requests.
+1. Gemini generates on a **cream paper ground** (same prompt as the Pi pipeline), with reference images when available.
+2. **rembg/BiRefNet cutout** runs automatically — you do not run `cutout.py` manually. This removes the cream background and produces a transparent PNG.
+3. Generated PNGs persist in the `avian-generated` Docker volume.
+
+### Reference images (same as Pi `pregen.py`)
+
+| Ref | Source | Required? |
+|-----|--------|-----------|
+| **Species photo (IMAGE 1)** | Wikipedia (auto-fetched, cached in `avian-refs-cache` volume) | Auto — works offline after first fetch |
+| **Style print (IMAGE 3)** | Koson/Yoshida kachō-e JPGs in `avian/assets/references/styles/` | Recommended — copy from a full AvianVisitors checkout |
+| **Anti-ref (IMAGE 2)** | `_anti_bluejay.jpg`, `_anti_barnswallow.jpg` in `references/` | Optional — only for jays/swallows; set `USE_ANTI_REF=0` to disable |
+
+Copy style references before building, or mount them:
+
+```bash
+# From a machine that has the full AvianVisitors assets:
+scp -r avian/assets/references/styles/ nuc:/opt/stacks/birdcollage/AvianVisitors/avian/assets/references/
+```
+
+Or bind-mount in `docker-compose.override.yml`:
+
+```yaml
+services:
+  avian-collage:
+    volumes:
+      - /path/to/references:/app/avian/assets/references:ro
+```
+
+Without style refs, generation still works (Wikipedia anatomy + text prompt only).
+
+### Transparency / checkerboard artifacts
+
+Gemini cannot render true transparency. The grey-and-white checkerboard you saw means the model tried anyway. The Pi pipeline never relies on that — it generates on **cream**, then **cutout** removes the ground. That cutout now runs inside the container after every generation.
+
+To regenerate birds that already have bad PNGs:
+
+```bash
+docker exec avian-collage rm -f /data/generated/*.png
+docker restart avian-collage
+```
+
+First cutout run downloads the BiRefNet model (~1 GB) into the container.
 
 Generation is **not** tied to new detections. It runs when:
 
