@@ -24,9 +24,20 @@ def _get_session():
         if _session is None:
             from rembg import new_session
 
-            log.info("Loading rembg model %s (first run may download ~1 GB)", CUTOUT_MODEL)
+            log.info("Loading rembg model %s (first run may download weights)", CUTOUT_MODEL)
             _session = new_session(CUTOUT_MODEL)
+            log.info("rembg model %s ready", CUTOUT_MODEL)
         return _session
+
+
+def preload_session() -> None:
+    """Load rembg at startup so the first bird generation does not hang silently."""
+    if not CUTOUT_ENABLED:
+        return
+    try:
+        _get_session()
+    except Exception as exc:
+        log.warning("rembg preload failed: %s", exc)
 
 
 def cutout_png(raw: bytes) -> bytes | None:

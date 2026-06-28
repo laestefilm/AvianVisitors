@@ -124,6 +124,7 @@ export REFS_DIR="${REFS_DIR:-/app/avian/assets/references}"
 export STYLES_DIR="${STYLES_DIR:-/app/avian/assets/references/styles}"
 export PROMPT_TEMPLATE="${PROMPT_TEMPLATE:-/app/avian/scripts/prompt.template.md}"
 export ILLUSTRATION_CUTOUT="${ILLUSTRATION_CUTOUT:-1}"
+export CUTOUT_MODEL="${CUTOUT_MODEL:-u2net}"
 export USE_ANTI_REF="${USE_ANTI_REF:-1}"
 
 cd /adapter

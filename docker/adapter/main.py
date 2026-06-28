@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from bng_client import (
     proxy_species_image,
     species_for_sci,
 )
+from cutout_post import CUTOUT_ENABLED, preload_session
 from illustrate import (
     GEMINI_API_KEY,
     GENERATED_DIR,
@@ -51,6 +53,8 @@ async def lifespan(_app: FastAPI):
             "yes" if os.environ.get("WANGP_ROOT", "").strip() else "no",
         )
         start_backfill_loop(fetch_lifelist)
+        if CUTOUT_ENABLED:
+            threading.Thread(target=preload_session, name="rembg-preload", daemon=True).start()
     else:
         log.info("Illustration generation disabled (no GEMINI_API_KEY or WANGP_ROOT)")
     yield
@@ -159,8 +163,9 @@ def _png_cache_headers(path: Path) -> dict[str, str]:
     return {"Cache-Control": "public, max-age=86400"}
 
 
-@app.get("/cutout.php")
+@app.api_route("/cutout.php", methods=["GET", "HEAD"])
 def cutout(
+    request: Request,
     sci: str = Query(..., min_length=3),
     pose: int = Query(1, ge=1, le=99),
     com: str = Query(""),
@@ -170,11 +175,17 @@ def cutout(
         raise HTTPException(status_code=400, detail="invalid sci")
     path = bundled_path(sci, pose)
     if path:
-        return FileResponse(path, media_type="image/png", headers=_png_cache_headers(path))
+        headers = _png_cache_headers(path)
+        if request.method == "HEAD":
+            return Response(status_code=200, media_type="image/png", headers=headers)
+        return FileResponse(path, media_type="image/png", headers=headers)
     if pose != 1:
         path = bundled_path(sci, 1)
         if path:
-            return FileResponse(path, media_type="image/png", headers=_png_cache_headers(path))
+            headers = _png_cache_headers(path)
+            if request.method == "HEAD":
+                return Response(status_code=200, media_type="image/png", headers=headers)
+            return FileResponse(path, media_type="image/png", headers=headers)
     queued = schedule_generation(sci, com, pose)
     if not generated_only:
         try:
@@ -184,10 +195,14 @@ def cutout(
                 if queued:
                     headers["X-Avian-Generate"] = "queued"
                 ctype = upstream.headers.get("content-type", "image/png")
+                if request.method == "HEAD":
+                    return Response(status_code=200, media_type=ctype, headers=headers)
                 return Response(content=upstream.content, media_type=ctype, headers=headers)
         except httpx.HTTPError:
             pass
     if queued:
+        if request.method == "HEAD":
+            return Response(status_code=202, headers={"X-Avian-Generate": "queued"})
         raise HTTPException(status_code=202, detail="illustration generation queued")
     raise HTTPException(status_code=404, detail="no illustration")
 
