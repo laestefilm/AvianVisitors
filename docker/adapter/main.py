@@ -30,7 +30,7 @@ from bng_client import (
     proxy_species_image,
     species_for_sci,
 )
-from cutout_post import CUTOUT_ENABLED, preload_session
+from cutout_post import CUTOUT_ENABLED, preload_session, recut_all_from_raw
 from illustrate import (
     GEMINI_API_KEY,
     GENERATED_DIR,
@@ -55,6 +55,8 @@ async def lifespan(_app: FastAPI):
         start_backfill_loop(fetch_lifelist)
         if CUTOUT_ENABLED:
             threading.Thread(target=preload_session, name="rembg-preload", daemon=True).start()
+            if os.environ.get("RECUT_FROM_RAW", "").lower() in ("1", "true", "yes"):
+                threading.Thread(target=recut_all_from_raw, name="recut-from-raw", daemon=True).start()
     else:
         log.info("Illustration generation disabled (no GEMINI_API_KEY or WANGP_ROOT)")
     yield

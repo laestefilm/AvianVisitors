@@ -20,11 +20,27 @@ CUTOUT_MODE = os.environ.get("CUTOUT_MODE", "hybrid").lower()
 CUTOUT_CREAM_TOLERANCE = float(os.environ.get("CUTOUT_CREAM_TOLERANCE", "38"))
 CUTOUT_CREAM_FRINGE = float(os.environ.get("CUTOUT_CREAM_FRINGE", "32"))
 CUTOUT_ALPHA_THRESHOLD = int(os.environ.get("CUTOUT_ALPHA_THRESHOLD", "145"))
-CUTOUT_BELLY_HOLE_MIN = int(os.environ.get("CUTOUT_BELLY_HOLE_MIN", "72"))
 CUTOUT_FRINGE_PASSES = int(os.environ.get("CUTOUT_FRINGE_PASSES", "3"))
+GENERATED_DIR = Path(os.environ.get("GENERATED_DIR", "/data/generated"))
+RAW_GENERATED_DIR = Path(os.environ.get("GENERATED_RAW_DIR", str(GENERATED_DIR / "raw")))
+SAVE_GENERATED_RAW = os.environ.get("SAVE_GENERATED_RAW", "1").lower() in ("1", "true", "yes")
 
 _session = None
 _session_lock = threading.Lock()
+
+
+def raw_path_for(filename: str) -> Path:
+    return RAW_GENERATED_DIR / filename
+
+
+def save_raw_png(filename: str, raw: bytes) -> Path | None:
+    """Persist the pre-cutout Gemini render for later re-matting."""
+    if not SAVE_GENERATED_RAW or len(raw) < 1024:
+        return None
+    dest = raw_path_for(filename)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(raw)
+    return dest
 
 
 def _flood_from_edges(mask: np.ndarray) -> np.ndarray:
@@ -123,22 +139,22 @@ def _repair_belly_holes(
     ml_fg: np.ndarray,
     cream_like: np.ndarray,
 ) -> np.ndarray:
-    """Fill rembg belly holes but leave small cream gaps (e.g. between toes)."""
+    """Fill rembg belly holes using original pixels; never fill cream paper."""
     ml_filled = _fill_holes(ml_fg)
     holes = ml_filled & ~ml_fg
     if not holes.any():
         return fg
     out = fg.copy()
     for comp in _label_components(holes):
-        area = len(comp)
         ys = np.fromiter((p[0] for p in comp), dtype=np.intp)
         xs = np.fromiter((p[1] for p in comp), dtype=np.intp)
-        mostly_cream = cream_like[ys, xs].mean() > 0.55
-        if mostly_cream and area < CUTOUT_BELLY_HOLE_MIN:
+        cream_mask = cream_like[ys, xs]
+        if cream_mask.all():
             continue
-        if mostly_cream and area < CUTOUT_BELLY_HOLE_MIN * 4:
-            continue
-        out[ys, xs] = True
+        if cream_mask.any():
+            out[ys[~cream_mask], xs[~cream_mask]] = True
+        else:
+            out[ys, xs] = True
     return out
 
 
@@ -151,13 +167,14 @@ def _compose_alpha(rgb: np.ndarray, ml_alpha: np.ndarray) -> np.ndarray:
     ml_fg = ml_alpha >= CUTOUT_ALPHA_THRESHOLD
 
     if CUTOUT_MODE == "rembg":
-        fg = ml_fg
+        fg = ml_fg.copy()
     else:
         edge_cream = _flood_from_edges(cream_like)
         fg = ml_fg.copy()
         fg[edge_cream] = False
         fg = _strip_cream_fringe(fg, fringe_cream, ml_alpha)
         fg = _repair_belly_holes(fg, ml_fg, cream_like)
+        fg &= ~(cream_like & (ml_alpha < 200))
 
     out = np.zeros(ml_alpha.shape, dtype=np.uint8)
     out[fg] = 255
@@ -186,29 +203,25 @@ def preload_session() -> None:
         log.warning("rembg preload failed: %s", exc)
 
 
-def _rembg_result(cut, rgb: np.ndarray) -> tuple[Image.Image, np.ndarray]:
-    """Normalize rembg output (PIL Image or RGBA ndarray) to RGB image + alpha."""
+def _rembg_alpha(cut, size: tuple[int, int]) -> np.ndarray:
+    """Extract the alpha matte from rembg output (PIL Image or RGBA ndarray)."""
     from PIL import Image
 
+    w, h = size
     if isinstance(cut, np.ndarray):
         if cut.ndim == 3 and cut.shape[2] >= 4:
             ml_alpha = cut[:, :, 3].astype(np.uint8)
-            cut_im = Image.fromarray(cut[:, :, :3].astype(np.uint8), mode="RGB")
         elif cut.ndim == 3 and cut.shape[2] == 3:
             ml_alpha = np.full(cut.shape[:2], 255, dtype=np.uint8)
-            cut_im = Image.fromarray(cut.astype(np.uint8), mode="RGB")
         else:
             raise ValueError(f"unexpected rembg array shape {cut.shape}")
     else:
-        cut_im = cut.convert("RGBA")
-        ml_alpha = np.array(cut_im.getchannel("A"))
-        cut_im = cut_im.convert("RGB")
-    if cut_im.size != (rgb.shape[1], rgb.shape[0]):
-        cut_im = cut_im.resize((rgb.shape[1], rgb.shape[0]), Image.Resampling.LANCZOS)
-        ml_alpha = np.array(Image.fromarray(ml_alpha, mode="L").resize(
-            (rgb.shape[1], rgb.shape[0]), Image.Resampling.LANCZOS
-        ))
-    return cut_im, ml_alpha
+        ml_alpha = np.array(cut.convert("RGBA").getchannel("A"))
+    if ml_alpha.shape != (h, w):
+        ml_alpha = np.array(
+            Image.fromarray(ml_alpha, mode="L").resize((w, h), Image.Resampling.LANCZOS)
+        )
+    return ml_alpha
 
 
 def cutout_png(raw: bytes) -> bytes | None:
@@ -226,9 +239,12 @@ def cutout_png(raw: bytes) -> bytes | None:
         im = Image.open(BytesIO(raw)).convert("RGB")
         rgb = np.array(im)
         session = _get_session()
-        cut, ml_alpha = _rembg_result(remove(im, session=session), rgb)
+        ml_alpha = _rembg_alpha(remove(im, session=session), (im.width, im.height))
         alpha = _compose_alpha(rgb, ml_alpha)
-        cut.putalpha(Image.fromarray(alpha, mode="L"))
+        rgba = np.empty((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
+        rgba[:, :, :3] = rgb
+        rgba[:, :, 3] = alpha
+        cut = Image.fromarray(rgba, mode="RGBA")
         bbox = cut.getchannel("A").getbbox()
         if bbox:
             pad = round(CUTOUT_MARGIN * max(bbox[2] - bbox[0], bbox[3] - bbox[1]))
@@ -250,3 +266,32 @@ def cutout_file(path: Path) -> bool:
         return False
     path.write_bytes(cut)
     return True
+
+
+def recut_from_raw(filename: str) -> bool:
+    """Re-run cutout on a saved raw illustration."""
+    raw_path = raw_path_for(filename)
+    if not raw_path.is_file():
+        return False
+    dest = GENERATED_DIR / filename
+    cut = cutout_png(raw_path.read_bytes())
+    if not cut or len(cut) < 1024:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(cut)
+    log.info("Recut from raw -> %s", dest)
+    return True
+
+
+def recut_all_from_raw() -> int:
+    """Re-matte every saved raw PNG in generated/raw/."""
+    raw_dir = RAW_GENERATED_DIR
+    if not raw_dir.is_dir():
+        log.info("No raw illustrations to recut in %s", raw_dir)
+        return 0
+    done = 0
+    for raw_path in sorted(raw_dir.glob("*.png")):
+        if recut_from_raw(raw_path.name):
+            done += 1
+    log.info("Recut %d illustration(s) from %s", done, raw_dir)
+    return done

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from cutout_post import cutout_png
+from cutout_post import cutout_png, save_raw_png
 from refs import build_gemini_parts
 
 log = logging.getLogger("illustrate")
@@ -94,10 +94,11 @@ def generator_configured() -> bool:
 
 
 def _save_png(dest: Path, raw: bytes) -> bool:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    save_raw_png(dest.name, raw)
     cut = cutout_png(raw)
     if not cut or len(cut) < 1024:
         return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(cut)
     return dest.stat().st_size > 1024
 

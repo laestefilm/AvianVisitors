@@ -2,8 +2,8 @@
   var PLACEHOLDER = [{"sci":"Calypte anna","com":"Anna's Hummingbird","featured":true},{"sci":"Passer domesticus","com":"House Sparrow"},{"sci":"Haemorhous mexicanus","com":"House Finch"},{"sci":"Turdus migratorius","com":"American Robin"},{"sci":"Zenaida macroura","com":"Mourning Dove"},{"sci":"Spinus psaltria","com":"Lesser Goldfinch"},{"sci":"Zonotrichia leucophrys","com":"White-crowned Sparrow"},{"sci":"Aphelocoma californica","com":"California Scrub-Jay"},{"sci":"Mimus polyglottos","com":"Northern Mockingbird"},{"sci":"Sayornis nigricans","com":"Black Phoebe"},{"sci":"Larus occidentalis","com":"Western Gull"},{"sci":"Corvus brachyrhynchos","com":"American Crow"}];
   // Bumped whenever the offline sketch build changes, so the browser
   // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r13';
-  var IMG_VERSION = 'r13';
+  var SKETCH_VERSION = 'r14';
+  var IMG_VERSION = 'r14';
 
   // Optional runtime config (injected by docker/entrypoint.sh for BirdNET-Go).
   var CFG = (typeof window !== 'undefined' && window.AVIAN_CONFIG) || {};
