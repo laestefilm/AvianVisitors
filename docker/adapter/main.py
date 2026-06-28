@@ -7,6 +7,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -30,6 +31,7 @@ from bng_client import (
 )
 from illustrate import (
     GEMINI_API_KEY,
+    GENERATED_DIR,
     bundled_path,
     generator_configured,
     schedule_generation,
@@ -142,6 +144,21 @@ def birdnet_api(
         raise HTTPException(status_code=502, detail=f"BirdNET-Go unreachable: {exc}") from exc
 
 
+def _png_cache_headers(path: Path) -> dict[str, str]:
+    """Bundled library PNGs cache long; on-demand generated PNGs cache shorter."""
+    try:
+        generated_root = GENERATED_DIR.resolve()
+        if path.resolve().is_relative_to(generated_root):
+            mtime = int(path.stat().st_mtime)
+            return {
+                "Cache-Control": "public, max-age=300",
+                "ETag": f'"{mtime}"',
+            }
+    except (OSError, ValueError):
+        pass
+    return {"Cache-Control": "public, max-age=86400"}
+
+
 @app.get("/cutout.php")
 def cutout(
     sci: str = Query(..., min_length=3),
@@ -153,11 +170,11 @@ def cutout(
         raise HTTPException(status_code=400, detail="invalid sci")
     path = bundled_path(sci, pose)
     if path:
-        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+        return FileResponse(path, media_type="image/png", headers=_png_cache_headers(path))
     if pose != 1:
         path = bundled_path(sci, 1)
         if path:
-            return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+            return FileResponse(path, media_type="image/png", headers=_png_cache_headers(path))
     queued = schedule_generation(sci, com, pose)
     if not generated_only:
         try:
