@@ -186,6 +186,31 @@ def preload_session() -> None:
         log.warning("rembg preload failed: %s", exc)
 
 
+def _rembg_result(cut, rgb: np.ndarray) -> tuple[Image.Image, np.ndarray]:
+    """Normalize rembg output (PIL Image or RGBA ndarray) to RGB image + alpha."""
+    from PIL import Image
+
+    if isinstance(cut, np.ndarray):
+        if cut.ndim == 3 and cut.shape[2] >= 4:
+            ml_alpha = cut[:, :, 3].astype(np.uint8)
+            cut_im = Image.fromarray(cut[:, :, :3].astype(np.uint8), mode="RGB")
+        elif cut.ndim == 3 and cut.shape[2] == 3:
+            ml_alpha = np.full(cut.shape[:2], 255, dtype=np.uint8)
+            cut_im = Image.fromarray(cut.astype(np.uint8), mode="RGB")
+        else:
+            raise ValueError(f"unexpected rembg array shape {cut.shape}")
+    else:
+        cut_im = cut.convert("RGBA")
+        ml_alpha = np.array(cut_im.getchannel("A"))
+        cut_im = cut_im.convert("RGB")
+    if cut_im.size != (rgb.shape[1], rgb.shape[0]):
+        cut_im = cut_im.resize((rgb.shape[1], rgb.shape[0]), Image.Resampling.LANCZOS)
+        ml_alpha = np.array(Image.fromarray(ml_alpha, mode="L").resize(
+            (rgb.shape[1], rgb.shape[0]), Image.Resampling.LANCZOS
+        ))
+    return cut_im, ml_alpha
+
+
 def cutout_png(raw: bytes) -> bytes | None:
     """Matte the bird onto transparency and crop. Returns PNG bytes or None on failure."""
     if not CUTOUT_ENABLED:
@@ -201,8 +226,7 @@ def cutout_png(raw: bytes) -> bytes | None:
         im = Image.open(BytesIO(raw)).convert("RGB")
         rgb = np.array(im)
         session = _get_session()
-        cut = remove(rgb, session=session)
-        ml_alpha = np.array(cut.getchannel("A"))
+        cut, ml_alpha = _rembg_result(remove(im, session=session), rgb)
         alpha = _compose_alpha(rgb, ml_alpha)
         cut.putalpha(Image.fromarray(alpha, mode="L"))
         bbox = cut.getchannel("A").getbbox()
