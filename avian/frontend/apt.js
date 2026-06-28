@@ -2,8 +2,8 @@
   var PLACEHOLDER = [{"sci":"Calypte anna","com":"Anna's Hummingbird","featured":true},{"sci":"Passer domesticus","com":"House Sparrow"},{"sci":"Haemorhous mexicanus","com":"House Finch"},{"sci":"Turdus migratorius","com":"American Robin"},{"sci":"Zenaida macroura","com":"Mourning Dove"},{"sci":"Spinus psaltria","com":"Lesser Goldfinch"},{"sci":"Zonotrichia leucophrys","com":"White-crowned Sparrow"},{"sci":"Aphelocoma californica","com":"California Scrub-Jay"},{"sci":"Mimus polyglottos","com":"Northern Mockingbird"},{"sci":"Sayornis nigricans","com":"Black Phoebe"},{"sci":"Larus occidentalis","com":"Western Gull"},{"sci":"Corvus brachyrhynchos","com":"American Crow"}];
   // Bumped whenever the offline sketch build changes, so the browser
   // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r11';
-  var IMG_VERSION = 'r11';
+  var SKETCH_VERSION = 'r13';
+  var IMG_VERSION = 'r13';
 
   // Optional runtime config (injected by docker/entrypoint.sh for BirdNET-Go).
   var CFG = (typeof window !== 'undefined' && window.AVIAN_CONFIG) || {};
@@ -46,6 +46,21 @@
   function collageItems(items) {
     if (!COLLAGE_GENERATED_ONLY) return items;
     return items.filter(function (s) { return illustratedSci[s.sci]; });
+  }
+
+  var COLLAGE_FADE_MS = 320;
+  function preloadImage(src) {
+    return new Promise(function (resolve) {
+      var img = new Image();
+      img.onload = img.onerror = function () { resolve(); };
+      img.src = src;
+    });
+  }
+  function preloadCollageImages(items) {
+    var urls = items.map(function (s) {
+      return cutoutSrc(s.sci, s.com, 1, { generatedOnly: COLLAGE_GENERATED_ONLY });
+    });
+    return Promise.all(urls.map(preloadImage));
   }
 
   // ---- Sliding pill helper ----
@@ -843,6 +858,17 @@
   // a "no detections in this window" message.
   function renderCollageFromData(animate) {
     var items = collageItems((DATA.recent && DATA.recent.species) || []);
+    if (animate === 'fade' && items.length && collage.querySelector('.gtile')) {
+      preloadCollageImages(items).then(function () {
+        collage.classList.add('is-refreshing');
+        setTimeout(function () {
+          renderCollage(items, false);
+          void collage.offsetWidth;
+          collage.classList.remove('is-refreshing');
+        }, COLLAGE_FADE_MS);
+      });
+      return;
+    }
     renderCollage(items, animate);
   }
   var rTimer;
@@ -1451,7 +1477,7 @@
     setInterval(function () {
       if (document.hidden) return;
       refreshIllustrated().then(function (grew) {
-        if (grew) renderCollageFromData(true);
+        if (grew) renderCollageFromData('fade');
       });
     }, 45000);
   }

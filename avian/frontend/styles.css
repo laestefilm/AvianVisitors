@@ -508,6 +508,12 @@
   .gcollage {
     flex: 1 1 auto; width: 100%; max-width: 1300px; margin: 0 auto;
     position: relative; min-height: 0;
+    transition: opacity 320ms cubic-bezier(.7,.05,.2,1);
+  }
+  .gcollage.is-refreshing { opacity: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    .gcollage { transition: none; }
+    .gcollage.is-refreshing { opacity: 1; }
   }
   /* Centre-out bloom: each tile fades + scales in; JS staggers the
      animation-delay by distance from the cluster centre. backwards

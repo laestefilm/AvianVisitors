@@ -5,3 +5,4 @@ python-multipart==0.0.20
 Pillow>=12.1.0,<13.0.0
 rembg>=2.0.76
 onnxruntime>=1.16
+numpy>=1.26
