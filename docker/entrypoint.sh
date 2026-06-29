@@ -6,6 +6,7 @@ BASE_PATH="$(echo "$BASE_PATH" | sed 's#/*$##')"
 export BASE_PATH
 export COLLAGE_ONLY="${COLLAGE_ONLY:-true}"
 export FULL_REFRESH_MS="${FULL_REFRESH_MS:-300000}"
+export COLLAGE_LAYOUT_REFRESH_MS="${COLLAGE_LAYOUT_REFRESH_MS:-1800000}"
 
 python3 - <<'PY'
 import os
@@ -16,6 +17,7 @@ base = os.environ.get("BASE_PATH", "").strip().rstrip("/")
 adapter = "http://127.0.0.1:8090"
 collage_only = os.environ.get("COLLAGE_ONLY", "true").lower() in ("1", "true", "yes")
 full_refresh = os.environ.get("FULL_REFRESH_MS", "300000")
+layout_refresh = os.environ.get("COLLAGE_LAYOUT_REFRESH_MS", "1800000")
 
 if base:
     api_base = f"{base}/api"
@@ -89,6 +91,7 @@ config_js = f"""window.AVIAN_CONFIG = {{
   "collageOnly": {str(collage_only).lower()},
   "collageGeneratedOnly": {str(collage_only).lower()},
   "fullRefreshMs": {full_refresh},
+  "collageLayoutRefreshMs": {layout_refresh},
   "basePath": "{base or '/'}"
 }};
 """

@@ -23,7 +23,7 @@ from bng_client import (
     fetch_detections,
     fetch_in_hours,
     fetch_lifelist,
-    fetch_recent,
+    fetch_species_window,
     health_ok,
     norm_detection,
     proxy_audio_by_id,
@@ -118,8 +118,7 @@ def birdnet_api(
             return JSONResponse({"species": fetch_lifelist(), "as_of": as_of})
 
         if action == "recent":
-            dets = fetch_in_hours(hours)
-            species = aggregate_species(dets)
+            species = fetch_species_window(hours)
             return JSONResponse({"hours": hours, "species": species, "as_of": as_of})
 
         if action == "species":
@@ -142,7 +141,12 @@ def birdnet_api(
         if action == "illustrated":
             rows = fetch_lifelist()
             ready = [r["sci"] for r in rows if r.get("sci") and bundled_path(r["sci"], 1)]
-            return JSONResponse({"ready": ready, "as_of": as_of})
+            flight_ready = [
+                r["sci"]
+                for r in rows
+                if r.get("sci") and bundled_path(r["sci"], 2)
+            ]
+            return JSONResponse({"ready": ready, "flight_ready": flight_ready, "as_of": as_of})
 
         raise HTTPException(status_code=400, detail=f"unknown action: {action}")
     except httpx.HTTPError as exc:

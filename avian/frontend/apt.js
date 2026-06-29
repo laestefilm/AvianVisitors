@@ -2,8 +2,8 @@
   var PLACEHOLDER = [{"sci":"Calypte anna","com":"Anna's Hummingbird","featured":true},{"sci":"Passer domesticus","com":"House Sparrow"},{"sci":"Haemorhous mexicanus","com":"House Finch"},{"sci":"Turdus migratorius","com":"American Robin"},{"sci":"Zenaida macroura","com":"Mourning Dove"},{"sci":"Spinus psaltria","com":"Lesser Goldfinch"},{"sci":"Zonotrichia leucophrys","com":"White-crowned Sparrow"},{"sci":"Aphelocoma californica","com":"California Scrub-Jay"},{"sci":"Mimus polyglottos","com":"Northern Mockingbird"},{"sci":"Sayornis nigricans","com":"Black Phoebe"},{"sci":"Larus occidentalis","com":"Western Gull"},{"sci":"Corvus brachyrhynchos","com":"American Crow"}];
   // Bumped whenever the offline sketch build changes, so the browser
   // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r14';
-  var IMG_VERSION = 'r14';
+  var SKETCH_VERSION = 'r16';
+  var IMG_VERSION = 'r16';
 
   // Optional runtime config (injected by docker/entrypoint.sh for BirdNET-Go).
   var CFG = (typeof window !== 'undefined' && window.AVIAN_CONFIG) || {};
@@ -14,6 +14,7 @@
   var COLLAGE_ONLY = !!CFG.collageOnly;
   var COLLAGE_GENERATED_ONLY = !!CFG.collageGeneratedOnly;
   var illustratedSci = {};
+  var illustratedFlightSci = {};
   function avianApi(path) {
     return API_BASE + '/' + String(path || '').replace(/^\//, '');
   }
@@ -32,10 +33,16 @@
     return fetchJson(avianApi('birdnet-api.php?action=illustrated'))
       .then(function (j) {
         var next = {};
+        var nextFlight = {};
         (j.ready || []).forEach(function (sci) { next[sci] = true; });
+        (j.flight_ready || []).forEach(function (sci) { nextFlight[sci] = true; });
         var grew = Object.keys(next).some(function (sci) { return !illustratedSci[sci]; });
+        var flightGrew = Object.keys(nextFlight).some(function (sci) {
+          return !illustratedFlightSci[sci];
+        });
         illustratedSci = next;
-        return grew;
+        illustratedFlightSci = nextFlight;
+        return grew || flightGrew;
       })
       .catch(function (e) {
         console.warn('illustrated fetch failed', e);
@@ -49,6 +56,47 @@
   }
 
   var COLLAGE_FADE_MS = 320;
+  var COLLAGE_LAYOUT_REFRESH_MS = CFG.collageLayoutRefreshMs || (30 * 60 * 1000);
+  var collageSciSet = {};
+  var collageLastLayoutRefresh = 0;
+
+  function shouldRefreshCollageLayout(items) {
+    if (!collage.querySelector('.gtile')) return true;
+    var newSet = {};
+    items.forEach(function (s) { if (s.sci) newSet[s.sci] = true; });
+    var oldKeys = Object.keys(collageSciSet);
+    var newKeys = Object.keys(newSet);
+    if (!newKeys.length && oldKeys.length) return true;
+    if (newKeys.length !== oldKeys.length) return true;
+    for (var i = 0; i < newKeys.length; i++) {
+      if (!collageSciSet[newKeys[i]]) return true;
+    }
+    return Date.now() - collageLastLayoutRefresh >= COLLAGE_LAYOUT_REFRESH_MS;
+  }
+
+  function rememberCollageLayout(items) {
+    collageSciSet = {};
+    items.forEach(function (s) { if (s.sci) collageSciSet[s.sci] = true; });
+    collageLastLayoutRefresh = Date.now();
+  }
+
+  function updateCollageTileMeta(items) {
+    var bySci = {};
+    items.forEach(function (s) { bySci[s.sci] = s; });
+    collage.querySelectorAll('.gtile').forEach(function (btn) {
+      var sci = btn.getAttribute('data-sci');
+      var s = bySci[sci];
+      if (!s) return;
+      var titleN = +s.n || 0;
+      btn.title = (s.com || s.sci) + ' · ' + fmtN(titleN) + ' ' +
+        (titleN === 1 ? 'call' : 'calls') + ' ' + windowLabel(currentHours);
+    });
+    if (collagePlaced) {
+      collagePlaced.forEach(function (t) {
+        if (t.data && bySci[t.data.sci]) t.data = bySci[t.data.sci];
+      });
+    }
+  }
   function preloadImage(src) {
     return new Promise(function (resolve) {
       var img = new Image();
@@ -519,7 +567,10 @@
       // the wings-spread silhouette nests correctly.
       var pose = collagePose[s.sci];
       if (pose === undefined) {
-        pose = (DIMS[base + '-2'] && Math.random() < FLY_PROB) ? 2 : 1;
+        var hasFlight = COLLAGE_GENERATED_ONLY
+          ? illustratedFlightSci[s.sci]
+          : !!DIMS[base + '-2'];
+        pose = (hasFlight && Math.random() < FLY_PROB) ? 2 : 1;
         collagePose[s.sci] = pose;
       }
       var slug = pose === 2 ? base + '-2' : base;
@@ -658,6 +709,7 @@
     // (first load, window change, view switch) - never on the silent 30s
     // poll or a resize, which render without the animate flag.
     if (animate) playCollageEntrance();
+    rememberCollageLayout(items);
   }
 
   // Staggered centre-out entrance: each tile fades + scales in, delayed by
@@ -856,8 +908,12 @@
   // Collage renders whatever is in DATA.recent.species. When the picker
   // changes, refreshRecent() refetches and re-renders. Empty state shows
   // a "no detections in this window" message.
-  function renderCollageFromData(animate) {
+  function renderCollageFromData(animate, force) {
     var items = collageItems((DATA.recent && DATA.recent.species) || []);
+    if (!force && !shouldRefreshCollageLayout(items)) {
+      updateCollageTileMeta(items);
+      return;
+    }
     if (animate === 'fade' && items.length && collage.querySelector('.gtile')) {
       preloadCollageImages(items).then(function () {
         collage.classList.add('is-refreshing');
@@ -875,7 +931,7 @@
   window.addEventListener('resize', function () {
     clearTimeout(rTimer);
     rTimer = setTimeout(function () {
-      renderCollageFromData();
+      renderCollageFromData(false, true);
       drawHistograms();
     }, 120);
   });
@@ -1414,11 +1470,12 @@
     if (animate) playAtlasEntrance();
   }
 
-  function renderWindowDependent(animate) {
+  function renderWindowDependent(animate, opts) {
+    opts = opts || {};
     // renderStatsLists runs BEFORE drawHistograms so the stats entrance
     // (fired at the end of drawHistograms) can stagger the side-panel rows
     // that were just built, in tandem with the graph populating.
-    renderCollageFromData(animate);
+    renderCollageFromData(animate, !!opts.forceCollage);
     renderStatsLists();
     drawHistograms(animate);
     renderAtlas(animate);
@@ -1439,7 +1496,8 @@
     return fetchJson(avianApi('birdnet-api.php?action=recent&hours=' + forHours))
       .then(function (j) {
         if (forHours !== currentHours) return; // window changed mid-flight
-        DATA.recent = j; renderWindowDependent(animate);
+        DATA.recent = j;
+        renderWindowDependent(animate, { forceCollage: !!animate });
       })
       .catch(function (e) { console.warn('recent fetch failed', e); });
   }
@@ -1461,7 +1519,7 @@
       try {
         recomputeDerived();
         renderTimeIndependent(animate);
-        renderCollageFromData(animate);
+        renderCollageFromData(animate, false);
       } catch (err) {
         console.error('AvianVisitors render failed', err);
       }
@@ -1477,7 +1535,7 @@
     setInterval(function () {
       if (document.hidden) return;
       refreshIllustrated().then(function (grew) {
-        if (grew) renderCollageFromData('fade');
+        if (grew) renderCollageFromData('fade', true);
       });
     }, 45000);
   }

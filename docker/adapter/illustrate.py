@@ -33,6 +33,7 @@ WANGP_RESOLUTION = os.environ.get("WANGP_RESOLUTION", "1024x1024")
 GENERATION_MAX_CONCURRENT = max(1, int(os.environ.get("GENERATION_MAX_CONCURRENT", "2")))
 ILLUSTRATION_BACKFILL = os.environ.get("ILLUSTRATION_BACKFILL", "1").lower() in ("1", "true", "yes")
 ILLUSTRATION_BACKFILL_INTERVAL = max(0, int(os.environ.get("ILLUSTRATION_BACKFILL_INTERVAL", "3600")))
+ILLUSTRATION_FLIGHT_POSE = os.environ.get("ILLUSTRATION_FLIGHT_POSE", "1").lower() in ("1", "true", "yes")
 
 _lock = threading.Lock()
 _inflight: set[str] = set()
@@ -203,6 +204,8 @@ def _generate_worker(sci: str, com: str, pose: int) -> None:
             ok = _generate_wangp(sci, com, pose, dest) or _generate_gemini(sci, com, pose, dest)
         if ok:
             log.info("Generated illustration for %s pose=%s -> %s", sci, pose, dest)
+            if pose == 1 and ILLUSTRATION_FLIGHT_POSE and not bundled_path(sci, 2):
+                schedule_generation(sci, com, 2)
         elif not generator_configured():
             log.info("Illustration skipped for %s (no GEMINI_API_KEY or WANGP_ROOT)", sci)
         else:
@@ -241,18 +244,37 @@ def backfill_missing_illustrations(fetch_lifelist: Callable[[], list[dict[str, A
     except Exception as exc:
         log.warning("Illustration backfill: lifelist fetch failed: %s", exc)
         return 0
-    missing = [row for row in lifelist if row.get("sci") and not bundled_path(row["sci"], 1)]
+    missing: list[tuple[dict[str, Any], int]] = []
+    for row in lifelist:
+        sci = row.get("sci")
+        if not sci:
+            continue
+        if not bundled_path(sci, 1):
+            missing.append((row, 1))
+        elif ILLUSTRATION_FLIGHT_POSE and not bundled_path(sci, 2):
+            missing.append((row, 2))
     if not missing:
-        log.info("Illustration backfill: all %d lifelist species have illustrations", len(lifelist))
+        log.info(
+            "Illustration backfill: all %d lifelist species have illustrations"
+            + (" (perched + flight)" if ILLUSTRATION_FLIGHT_POSE else " (perched)"),
+            len(lifelist),
+        )
         return 0
+    names = ", ".join(
+        f"{row.get('com') or row['sci']} ({row['sci']}) pose={pose}"
+        for row, pose in missing[:8]
+    )
+    if len(missing) > 8:
+        names += f", +{len(missing) - 8} more"
     log.info(
-        "Illustration backfill: queuing %d of %d species missing illustrations",
+        "Illustration backfill: queuing %d missing render(s) across %d lifelist species: %s",
         len(missing),
         len(lifelist),
+        names,
     )
     queued = 0
-    for row in missing:
-        if schedule_generation(row["sci"], row.get("com") or "", 1):
+    for row, pose in missing:
+        if schedule_generation(row["sci"], row.get("com") or "", pose):
             queued += 1
     return queued
 

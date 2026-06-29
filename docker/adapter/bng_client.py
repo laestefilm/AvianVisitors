@@ -269,37 +269,188 @@ def fetch_daily_analytics(days: int = 30) -> tuple[list[dict[str, Any]], list[di
     return daily, hourly
 
 
+def _parse_display_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) == 10 and text[4] == "-":
+        try:
+            return datetime.fromisoformat(text + "T00:00:00")
+        except ValueError:
+            return None
+    normalized = text.replace("Z", "+00:00")
+    if " " in normalized and "T" not in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+    try:
+        dt = datetime.fromisoformat(normalized)
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    except ValueError:
+        return None
+
+
+def fetch_species_window(hours: int) -> list[dict[str, Any]]:
+    """Species heard in a time window via BirdNET analytics (not the recent-N cap)."""
+    end = _today_local()
+    if hours >= 1000000:
+        since_dt = None
+        start = end - timedelta(days=3650)
+    else:
+        since_dt = datetime.now().replace(tzinfo=None) - timedelta(hours=hours)
+        start = since_dt.date()
+
+    try:
+        rows = _fetch_species_summary(
+            {"start_date": start.isoformat(), "end_date": end.isoformat()}
+        )
+    except httpx.HTTPError as exc:
+        log.warning("species window summary failed (%sh): %s", hours, exc)
+        dets = fetch_in_hours(hours)
+        return aggregate_species(dets)
+
+    if since_dt is not None:
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            if int(row.get("n") or 0) <= 0:
+                continue
+            last = _parse_display_dt(row.get("last_seen"))
+            first = _parse_display_dt(row.get("first_seen"))
+            ref = last or first
+            if ref is None or ref >= since_dt:
+                kept.append(row)
+        rows = kept
+
+    rows.sort(key=lambda r: r.get("last_seen") or "", reverse=True)
+    return rows
+
+
+def _species_row_from_summary(row: dict[str, Any]) -> dict[str, Any] | None:
+    sci = row.get("scientificName") or row.get("scientific_name") or row.get("sci")
+    if not sci:
+        return None
+    return {
+        "sci": sci,
+        "com": row.get("commonName") or row.get("common_name") or row.get("com") or sci,
+        "first_seen": row.get("firstSeen")
+        or row.get("first_seen")
+        or row.get("first_heard")
+        or row.get("first_heard_date"),
+        "last_seen": row.get("lastSeen")
+        or row.get("last_seen")
+        or row.get("last_heard")
+        or row.get("last_heard_date"),
+        "n": int(row.get("count") or row.get("detections") or row.get("n") or 0),
+        "best_conf": float(
+            row.get("bestConfidence")
+            or row.get("best_conf")
+            or row.get("max_confidence")
+            or row.get("avg_confidence")
+            or 0
+        ),
+    }
+
+
+def _parse_species_summary(body: Any) -> list[dict[str, Any]]:
+    if isinstance(body, list):
+        rows = body
+    elif isinstance(body, dict):
+        rows = body.get("species") or body.get("data") or []
+    else:
+        rows = []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        parsed = _species_row_from_summary(row)
+        if parsed:
+            out.append(parsed)
+    return out
+
+
+def _fetch_species_summary(params: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    with _client() as c:
+        r = c.get(f"{API}/analytics/species/summary", params=params or {})
+        r.raise_for_status()
+        return _parse_species_summary(r.json())
+
+
+def _merge_lifelist(
+    by_sci: dict[str, dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    prefer_existing_counts: bool = True,
+) -> None:
+    for row in rows:
+        sci = row.get("sci") or ""
+        if not sci:
+            continue
+        existing = by_sci.get(sci)
+        if existing is None:
+            by_sci[sci] = row
+            continue
+        if not prefer_existing_counts:
+            by_sci[sci] = row
+            continue
+        if int(row.get("n") or 0) > int(existing.get("n") or 0):
+            existing["n"] = row["n"]
+        for key in ("com", "first_seen", "last_seen", "best_conf"):
+            if not existing.get(key) and row.get(key):
+                existing[key] = row[key]
+
+
 def fetch_lifelist() -> list[dict[str, Any]]:
     end = _today_local()
     start = end - timedelta(days=3650)
-    with _client() as c:
-        try:
-            r = c.get(
-                f"{API}/analytics/species/summary",
-                params={"start_date": start.isoformat(), "end_date": end.isoformat()},
-            )
+    by_sci: dict[str, dict[str, Any]] = {}
+
+    try:
+        _merge_lifelist(by_sci, _fetch_species_summary())
+    except httpx.HTTPError as exc:
+        log.debug("species/summary (no dates) failed: %s", exc)
+
+    try:
+        _merge_lifelist(
+            by_sci,
+            _fetch_species_summary(
+                {"start_date": start.isoformat(), "end_date": end.isoformat()}
+            ),
+        )
+    except httpx.HTTPError as exc:
+        log.debug("species/summary (dated) failed: %s", exc)
+
+    # Catch species analytics hasn't rolled into summary yet (common for brand-new lifers).
+    try:
+        with _client() as c:
+            r = c.get(f"{API}/analytics/species/detections/new")
             if r.is_success:
-                body = r.json()
-                rows = _as_list(body) if not isinstance(body, dict) else body.get("species", [])
-                out = []
-                for row in rows:
-                    sci = row.get("scientificName") or row.get("scientific_name") or row.get("sci")
-                    if not sci:
-                        continue
-                    out.append(
-                        {
-                            "sci": sci,
-                            "com": row.get("commonName") or row.get("common_name") or row.get("com") or sci,
-                            "first_seen": row.get("firstSeen") or row.get("first_seen"),
-                            "last_seen": row.get("lastSeen") or row.get("last_seen"),
-                            "n": int(row.get("count") or row.get("detections") or row.get("n") or 0),
-                            "best_conf": float(row.get("bestConfidence") or row.get("best_conf") or 0),
-                        }
-                    )
-                if out:
-                    return out
-        except httpx.HTTPError as exc:
-            log.debug("species/summary failed: %s", exc)
+                for row in _parse_species_summary(r.json()):
+                    if row["sci"] not in by_sci:
+                        log.info("Lifelist: adding species from detections/new: %s", row["sci"])
+                        by_sci[row["sci"]] = row
+    except httpx.HTTPError as exc:
+        log.debug("species/detections/new failed: %s", exc)
+
+    if by_sci:
+        recent = aggregate_species(fetch_recent(MAX_LIMIT))
+        added = 0
+        for row in recent:
+            sci = row.get("sci") or ""
+            if sci and sci not in by_sci:
+                by_sci[sci] = {
+                    "sci": sci,
+                    "com": row.get("com") or sci,
+                    "first_seen": row.get("last_seen"),
+                    "last_seen": row.get("last_seen"),
+                    "n": row.get("n") or 0,
+                    "best_conf": row.get("best_conf") or 0.0,
+                }
+                added += 1
+        if added:
+            log.info("Lifelist: merged %d species from recent detections", added)
+        lifelist = list(by_sci.values())
+        lifelist.sort(key=lambda r: r.get("first_seen") or "")
+        return lifelist
 
     dets = fetch_recent(MAX_LIMIT)
     species = aggregate_species(dets)
@@ -317,6 +468,11 @@ def fetch_lifelist() -> list[dict[str, Any]]:
                 "best_conf": s["best_conf"],
             }
         )
+    log.warning(
+        "Lifelist fell back to recent detections only (%d species from %d rows)",
+        len(lifelist),
+        len(dets),
+    )
     lifelist.sort(key=lambda r: r.get("first_seen") or "")
     return lifelist
 
