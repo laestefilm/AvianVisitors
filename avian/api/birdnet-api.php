@@ -92,10 +92,31 @@ switch ($action) {
     }
 
     case 'recent': {
-        // Cap raised to 1,000,000 hours (~114 years) so the frontend's
-        // "ALL" button can turn off the time filter without needing a
-        // separate code path.
-        $hours = max(1, min(1000000, (int)($_GET['hours'] ?? 24)));
+        // hours=0 means detections since local midnight (today).
+        $hours = (int)($_GET['hours'] ?? 0);
+        if ($hours === 0) {
+            $rs = rows($db,
+              "SELECT Sci_Name AS sci, Com_Name AS com, COUNT(*) AS n, MAX(Confidence) AS best_conf, "
+            . "       MAX(Date||' '||Time) AS last_seen "
+            . "FROM detections "
+            . "WHERE Date = date('now','localtime') "
+            . "GROUP BY Sci_Name ORDER BY last_seen DESC"
+            );
+            foreach ($rs as &$r) {
+                $best = one($db,
+                  "SELECT File_Name AS file, Date AS d, Time AS t, Confidence AS conf "
+                . "FROM detections "
+                . "WHERE Sci_Name = :sn AND Date = date('now','localtime') "
+                . "ORDER BY Confidence DESC LIMIT 1",
+                  [':sn' => $r['sci']]
+                );
+                $r['top_file'] = $best['file'] ?? null;
+                $r['top_at']   = isset($best['d']) ? ($best['d'].' '.$best['t']) : null;
+            }
+            echo json_encode(['hours' => 0, 'window' => 'today', 'species' => $rs, 'as_of' => date('c')]);
+            break;
+        }
+        $hours = max(1, min(1000000, $hours));
         // species-collapsed view: one row per species seen in the window,
         // with the file of its highest-confidence detection inside the window.
         $rs = rows($db,

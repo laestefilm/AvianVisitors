@@ -5,7 +5,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nginx curl \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/nginx/sites-enabled/default \
-    && mkdir -p /data/generated /var/cache/nginx /app/avian/scripts
+    && mkdir -p /data/generated /data/frame-export /var/cache/nginx /app/avian/scripts
 
 WORKDIR /adapter
 COPY docker/adapter/requirements.txt .

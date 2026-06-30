@@ -31,6 +31,13 @@ from bng_client import (
     species_for_sci,
 )
 from cutout_post import CUTOUT_ENABLED, preload_session, recut_all_from_raw
+from frame_export import (
+    FRAME_EXPORT_ENABLED,
+    frame_jpg_path,
+    read_status,
+    schedule_frame_export,
+    start_frame_export_loop,
+)
 from illustrate import (
     GEMINI_API_KEY,
     GENERATED_DIR,
@@ -59,6 +66,8 @@ async def lifespan(_app: FastAPI):
                 threading.Thread(target=recut_all_from_raw, name="recut-from-raw", daemon=True).start()
     else:
         log.info("Illustration generation disabled (no GEMINI_API_KEY or WANGP_ROOT)")
+    if FRAME_EXPORT_ENABLED:
+        start_frame_export_loop(fetch_species_window, bundled_path)
     yield
 
 
@@ -69,18 +78,42 @@ BASE_PATH = os.environ.get("BASE_PATH", "/collage").rstrip("/")
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {
+    payload = {
         "ok": True,
         "birdnet_go": BIRDNET_GO_URL,
         "birdnet_go_reachable": health_ok(),
         "base_path": BASE_PATH,
     }
+    if FRAME_EXPORT_ENABLED:
+        payload["frame_export"] = read_status()
+    return payload
+
+
+@app.get("/frame.jpg")
+def frame_jpg() -> Response:
+    path = frame_jpg_path()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="frame export not ready")
+    mtime = int(path.stat().st_mtime)
+    headers = {
+        "Cache-Control": "public, max-age=60",
+        "ETag": f'"{mtime}"',
+    }
+    return FileResponse(path, media_type="image/jpeg", headers=headers)
+
+
+@app.get("/frame.json")
+def frame_json() -> JSONResponse:
+    status = read_status()
+    if not status.get("ready"):
+        raise HTTPException(status_code=404, detail="frame export not ready")
+    return JSONResponse(status)
 
 
 @app.get("/birdnet-api.php")
 def birdnet_api(
     action: str = "stats",
-    hours: int = Query(24, ge=1, le=1000000),
+    hours: int = Query(0, ge=0, le=1000000),
     days: int = Query(30, ge=1, le=90),
     limit: int = Query(10, ge=1, le=100),
     sci: str = "",
@@ -91,13 +124,12 @@ def birdnet_api(
     try:
         if action == "stats":
             lifelist = fetch_lifelist()
-            today = datetime.now().date().isoformat()
-            recent_day = fetch_in_hours(24)
+            recent_day = fetch_in_hours(0)
             recent_hour = fetch_in_hours(1)
             week = fetch_in_hours(24 * 7)
             total_det = sum(int(s.get("n") or 0) for s in lifelist)
             first = min((s.get("first_seen") for s in lifelist if s.get("first_seen")), default=None)
-            today_dets = [d for d in recent_day if d.get("d") == today]
+            today_dets = recent_day
             payload = {
                 "totals": {"detections": total_det, "species": len(lifelist)},
                 "today": {
@@ -119,7 +151,10 @@ def birdnet_api(
 
         if action == "recent":
             species = fetch_species_window(hours)
-            return JSONResponse({"hours": hours, "species": species, "as_of": as_of})
+            payload = {"hours": hours, "species": species, "as_of": as_of}
+            if hours == 0:
+                payload["window"] = "today"
+            return JSONResponse(payload)
 
         if action == "species":
             if not sci:
@@ -147,6 +182,11 @@ def birdnet_api(
                 if r.get("sci") and bundled_path(r["sci"], 2)
             ]
             return JSONResponse({"ready": ready, "flight_ready": flight_ready, "as_of": as_of})
+
+        if action == "frame":
+            status = read_status()
+            status["as_of"] = as_of
+            return JSONResponse(status)
 
         raise HTTPException(status_code=400, detail=f"unknown action: {action}")
     except httpx.HTTPError as exc:

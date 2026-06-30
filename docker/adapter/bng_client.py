@@ -42,6 +42,10 @@ def _today_local() -> date:
     return datetime.now().date()
 
 
+def _midnight_local() -> datetime:
+    return datetime.combine(_today_local(), datetime.min.time())
+
+
 def _parse_ts(det: dict[str, Any]) -> datetime | None:
     for key in ("timestamp", "dateTime", "datetime"):
         raw = det.get(key)
@@ -126,7 +130,10 @@ def fetch_in_hours(hours: int, limit: int | None = None) -> list[dict[str, Any]]
     if hours >= 1000000:
         return fetch_recent(lim)
 
-    since = datetime.now().replace(tzinfo=None) - timedelta(hours=hours)
+    if hours == 0:
+        since = _midnight_local()
+    else:
+        since = datetime.now().replace(tzinfo=None) - timedelta(hours=hours)
     dets = fetch_recent(lim)
     filtered = []
     for d in dets:
@@ -290,22 +297,28 @@ def _parse_display_dt(value: Any) -> datetime | None:
         return None
 
 
-def fetch_species_window(hours: int) -> list[dict[str, Any]]:
-    """Species heard in a time window via BirdNET analytics (not the recent-N cap)."""
+def _window_bounds(hours: int) -> tuple[date, date, datetime | None]:
+    """Return (summary_start_date, summary_end_date, optional_since_datetime)."""
     end = _today_local()
     if hours >= 1000000:
-        since_dt = None
-        start = end - timedelta(days=3650)
-    else:
-        since_dt = datetime.now().replace(tzinfo=None) - timedelta(hours=hours)
-        start = since_dt.date()
+        return end - timedelta(days=3650), end, None
+    if hours == 0:
+        return end, end, _midnight_local()
+    since_dt = datetime.now().replace(tzinfo=None) - timedelta(hours=hours)
+    return since_dt.date(), end, since_dt
+
+
+def fetch_species_window(hours: int) -> list[dict[str, Any]]:
+    """Species heard in a time window via BirdNET analytics (not the recent-N cap)."""
+    start, end, since_dt = _window_bounds(hours)
 
     try:
         rows = _fetch_species_summary(
             {"start_date": start.isoformat(), "end_date": end.isoformat()}
         )
     except httpx.HTTPError as exc:
-        log.warning("species window summary failed (%sh): %s", hours, exc)
+        label = "today" if hours == 0 else f"{hours}h"
+        log.warning("species window summary failed (%s): %s", label, exc)
         dets = fetch_in_hours(hours)
         return aggregate_species(dets)
 

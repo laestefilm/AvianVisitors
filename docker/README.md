@@ -48,6 +48,12 @@ The adapter exposes the same JSON endpoints the Pi version uses (`birdnet-api.ph
 | `WANGP_ROOT` | (empty) | Path to Wan2GP install inside container |
 | `WANGP_MODEL` | `qwen_image_20B` | WanGP model alias |
 
+| `ILLUSTRATION_FLIGHT_POSE` | `1` | Generate flight pose (`-2.png`) after perched |
+| `FRAME_EXPORT_ENABLED` | `1` | Export 3840×2160 JPEG for Samsung Frame / Home Assistant |
+| `FRAME_EXPORT_HOURS` | `0` | Detection window for the poster (`0` = today since midnight) |
+| `FRAME_EXPORT_INTERVAL` | `300` | Re-export interval in seconds |
+| `FRAME_EXPORT_HOST_PATH` | `./frame-export` | Host folder bind-mounted to `/data/frame-export` |
+
 ### `.env` example
 
 ```env
@@ -159,6 +165,87 @@ server {
 ```
 
 Alternatively, keep separate ports (8180 BirdNET-Go, 8182 collage) — simplest and recommended.
+
+## Samsung Frame / Home Assistant export
+
+The adapter renders a **3840×2160 JPEG** poster (cream background, heard-recently birds with illustrated cutouts) for Samsung The Frame Art Mode. Home Assistant only needs to upload the file when your TV is already in Art Mode.
+
+### Output files
+
+Bind-mounted from the container (default `./frame-export` next to `docker-compose.yml`):
+
+| File | Purpose |
+|------|---------|
+| `current.jpg` | 4K JPEG ready for `samsungtv_smart.art_upload` |
+| `current.json` | Metadata: `updated_at`, `sha256`, `species_count`, species list |
+
+HTTP (if HA cannot mount the folder):
+
+- JPEG: `http://<host>:8182/collage/api/frame.jpg` (or `/api/frame.jpg` without subpath)
+- Status: `http://<host>:8182/collage/api/frame.json`
+- Status (alt): `http://<host>:8182/collage/api/birdnet-api.php?action=frame`
+
+Re-export runs every `FRAME_EXPORT_INTERVAL` seconds (default 5 min) and after new illustrations are saved.
+
+### Home Assistant setup
+
+1. Install **[ha-samsungtv-smart](https://github.com/TheFab21/ha-samsungtv-smart)** (HACS) and pair your Frame TV.
+2. Mount the export folder into HA, **or** download via `wget` in a shell command:
+
+```yaml
+# configuration.yaml — optional folder sensor
+sensor:
+  - platform: folder
+    folder: /config/www/avian-frame
+    filter: "current.jpg"
+```
+
+Point HA at the host path where `FRAME_EXPORT_HOST_PATH` is mounted, or copy `current.jpg` there periodically.
+
+3. **Automation — upload only when Art Mode is on and the poster changed:**
+
+```yaml
+automation:
+  - alias: "Frame TV — sync Avian poster"
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: state
+        entity_id: switch.samsung_frame_art_mode   # or your Frame art switch
+        state: "on"
+    action:
+      - service: samsungtv_smart.art_upload
+        target:
+          entity_id: media_player.samsung_frame
+        data:
+          file_path: /config/www/avian-frame/current.jpg
+          file_type: jpg
+```
+
+Use a **REST sensor** on `frame.json` and compare `updated_at` or `sha256` in the condition if you only want to upload when the image actually changed:
+
+```yaml
+rest:
+  - resource: http://192.168.50.108:8182/collage/api/frame.json
+    sensor:
+      - name: avian_frame_updated
+        value_template: "{{ value_json.updated_at }}"
+        json_attributes:
+          - sha256
+          - species_count
+```
+
+```yaml
+condition:
+  - condition: template
+    value_template: >
+      {{ states('sensor.avian_frame_updated') != states('input_text.avian_frame_last_sync') }}
+```
+
+After a successful upload, store the new `updated_at` in an `input_text` helper so unchanged posters are not re-sent.
+
+4. **Do not push when Art Mode is off** — your `switch.samsung_*_frame_art_mode` condition handles that; the collage keeps updating `current.jpg` in the background regardless.
 
 ## Branch
 

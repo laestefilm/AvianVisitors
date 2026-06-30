@@ -2,8 +2,8 @@
   var PLACEHOLDER = [{"sci":"Calypte anna","com":"Anna's Hummingbird","featured":true},{"sci":"Passer domesticus","com":"House Sparrow"},{"sci":"Haemorhous mexicanus","com":"House Finch"},{"sci":"Turdus migratorius","com":"American Robin"},{"sci":"Zenaida macroura","com":"Mourning Dove"},{"sci":"Spinus psaltria","com":"Lesser Goldfinch"},{"sci":"Zonotrichia leucophrys","com":"White-crowned Sparrow"},{"sci":"Aphelocoma californica","com":"California Scrub-Jay"},{"sci":"Mimus polyglottos","com":"Northern Mockingbird"},{"sci":"Sayornis nigricans","com":"Black Phoebe"},{"sci":"Larus occidentalis","com":"Western Gull"},{"sci":"Corvus brachyrhynchos","com":"American Crow"}];
   // Bumped whenever the offline sketch build changes, so the browser
   // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r16';
-  var IMG_VERSION = 'r16';
+  var SKETCH_VERSION = 'r17';
+  var IMG_VERSION = 'r17';
 
   // Optional runtime config (injected by docker/entrypoint.sh for BirdNET-Go).
   var CFG = (typeof window !== 'undefined' && window.AVIAN_CONFIG) || {};
@@ -260,7 +260,9 @@
     });
   }
   var winBtns = [].slice.call(winPick.querySelectorAll('button'));
-  var currentHours = +readLS('bird:window', '24') || 24;
+  var savedWindow = readLS('bird:window', '0');
+  if (savedWindow === '24') savedWindow = '0';
+  var currentHours = savedWindow === '' ? 0 : (+savedWindow || 0);
   winBtns.forEach(function (b) {
     b.setAttribute('aria-current', (+b.dataset.h === currentHours) ? 'true' : 'false');
   });
@@ -958,11 +960,21 @@
   }
   // Human label for the current time-window picker selection - replaces
   // a bare "window" with the span it actually covers. Thresholds match
-  // the winPick buttons (1H / 12H / 24H / 7D / ALL).
+  // the winPick buttons (1H / 12H / TODAY / 7D / ALL).
+  function windowStartMs(h, now) {
+    now = now || Date.now();
+    if (h >= 1000000) return 0;
+    if (+h === 0) {
+      var d = new Date(now);
+      d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    }
+    return now - h * 3600000;
+  }
   function windowLabel(h) {
+    if (+h === 0) return 'today';
     if (h <= 1) return 'this hour';
     if (h <= 12) return 'past 12h';
-    if (h <= 24) return 'today';
     if (h <= 168) return 'this week';
     return 'all time';
   }
@@ -1294,12 +1306,12 @@
     // to the life list this 1h / 12h / 24h / 7d. Never shown for the ALL
     // window (every species would qualify against an open-ended span).
     var now = Date.now();
-    var windowStartMs = now - currentHours * 3600000;
+    var windowStartMsVal = windowStartMs(currentHours, now);
     grid.innerHTML = species.map(function (s) {
       var total = +s.n || 0;
       var win = winBySci[s.sci] || 0;
       var firstMs = Date.parse((s.first_seen || '').replace(' ', 'T'));
-      var isLifer = !isAllWindow && !isNaN(firstMs) && firstMs >= windowStartMs;
+      var isLifer = !isAllWindow && !isNaN(firstMs) && firstMs >= windowStartMsVal;
       var sketchSrc = avianApi('cutout.php?sci=') + encodeURIComponent(s.sci) +
         (s.com ? '&com=' + encodeURIComponent(s.com) : '') +
         '&v=' + SKETCH_VERSION;

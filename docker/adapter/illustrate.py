@@ -101,7 +101,20 @@ def _save_png(dest: Path, raw: bytes) -> bool:
     if not cut or len(cut) < 1024:
         return False
     dest.write_bytes(cut)
-    return dest.stat().st_size > 1024
+    ok = dest.stat().st_size > 1024
+    if ok:
+        _schedule_frame_export()
+    return ok
+
+
+def _schedule_frame_export() -> None:
+    try:
+        from bng_client import fetch_species_window
+        from frame_export import schedule_frame_export
+
+        schedule_frame_export(fetch_species_window, bundled_path)
+    except Exception:
+        log.debug("frame export schedule skipped", exc_info=True)
 
 
 def _generate_gemini(sci: str, com: str, pose: int, dest: Path) -> bool:

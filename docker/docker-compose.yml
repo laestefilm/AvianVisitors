@@ -34,9 +34,14 @@ services:
       WANGP_ROOT: ${WANGP_ROOT:-}
       WANGP_MODEL: ${WANGP_MODEL:-qwen_image_20B}
       WANGP_RESOLUTION: ${WANGP_RESOLUTION:-1024x1024}
+      FRAME_EXPORT_ENABLED: ${FRAME_EXPORT_ENABLED:-1}
+      FRAME_EXPORT_HOURS: ${FRAME_EXPORT_HOURS:-0}
+      FRAME_EXPORT_INTERVAL: ${FRAME_EXPORT_INTERVAL:-300}
+      FRAME_EXPORT_DIR: /data/frame-export
     volumes:
       - avian-generated:/data/generated
       - avian-refs-cache:/data/references
+      - ${FRAME_EXPORT_HOST_PATH:-./frame-export}:/data/frame-export
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
