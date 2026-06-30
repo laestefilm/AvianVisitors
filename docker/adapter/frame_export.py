@@ -23,6 +23,8 @@ FRAME_EXPORT_HOURS = int(os.environ.get("FRAME_EXPORT_HOURS", "0"))
 FRAME_EXPORT_INTERVAL = max(60, int(os.environ.get("FRAME_EXPORT_INTERVAL", "300")))
 FRAME_EXPORT_MAX_BIRDS = max(1, int(os.environ.get("FRAME_EXPORT_MAX_BIRDS", "28")))
 FRAME_EXPORT_POSE = max(1, int(os.environ.get("FRAME_EXPORT_POSE", "1")))
+FRAME_EXPORT_GAP = max(8, int(os.environ.get("FRAME_EXPORT_GAP", "56")))
+FRAME_EXPORT_MARGIN = max(16, int(os.environ.get("FRAME_EXPORT_MARGIN", "72")))
 FRAME_W = int(os.environ.get("FRAME_EXPORT_WIDTH", "3840"))
 FRAME_H = int(os.environ.get("FRAME_EXPORT_HEIGHT", "2160"))
 FRAME_BG = tuple(
@@ -85,13 +87,90 @@ def _load_cutout(path: Path, max_side: int) -> Image.Image | None:
     return im
 
 
-def _spiral_xy(index: int, total: int, cx: float, cy: float, radius: float) -> tuple[float, float]:
-    if total <= 1:
-        return cx, cy
-    t = index / max(total - 1, 1)
-    angle = t * math.pi * 2.0 * 2.75
-    r = radius * math.sqrt(t)
-    return cx + r * math.cos(angle), cy + r * math.sin(angle)
+def _boxes_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int], gap: int) -> bool:
+    return not (
+        a[2] + gap <= b[0]
+        or a[0] >= b[2] + gap
+        or a[3] + gap <= b[1]
+        or a[1] >= b[3] + gap
+    )
+
+
+def _find_open_slot(
+    w: int,
+    h: int,
+    placed: list[tuple[int, int, int, int]],
+    cx: float,
+    cy: float,
+) -> tuple[int, int, int, int] | None:
+    """Spiral outward from centre until a non-overlapping bbox is found."""
+    margin = FRAME_EXPORT_MARGIN
+    gap = FRAME_EXPORT_GAP
+    step = max(28, min(w, h) // 6)
+    max_r = math.hypot(FRAME_W, FRAME_H)
+    for ring in range(0, int(max_r), step):
+        samples = max(40, ring // 8)
+        for k in range(samples):
+            theta = (k / samples) * math.pi * 2.0
+            left = int(round(cx + ring * math.cos(theta) - w / 2))
+            top = int(round(cy + ring * math.sin(theta) - h / 2))
+            if left < margin or top < margin:
+                continue
+            if left + w > FRAME_W - margin or top + h > FRAME_H - margin:
+                continue
+            box = (left, top, left + w, top + h)
+            if any(_boxes_overlap(box, other, gap) for other in placed):
+                continue
+            return box
+    return None
+
+
+def _pack_tiles(
+    prepared: list[dict[str, Any]],
+    area_scale: float,
+) -> list[tuple[dict[str, Any], tuple[int, int, int, int], int, int]] | None:
+    """Return [(row, box, w, h), ...] or None if birds cannot fit at this scale."""
+    n = len(prepared)
+    if not n:
+        return None
+
+    cx, cy = FRAME_W / 2, FRAME_H / 2
+    # Less total ink as species count rises — keeps silhouettes separated.
+    cover = min(0.42, 0.22 + 0.012 * n) * area_scale
+    budget = FRAME_W * FRAME_H * cover
+    scores = [math.pow(item["n"], 0.55) for item in prepared]
+    score_sum = sum(scores) or 1.0
+    min_side = max(72, int(min(FRAME_W, FRAME_H) * 0.045 * area_scale))
+
+    tiles: list[tuple[dict[str, Any], int, int, Image.Image]] = []
+    for item, score in zip(prepared, scores):
+        cutout = item["im"]
+        ar = cutout.width / max(cutout.height, 1)
+        area = max(min_side * min_side, budget * (score / score_sum))
+        tile_h = max(min_side, round(math.sqrt(area / max(ar, 0.35))))
+        tile_w = max(min_side, round(tile_h * ar))
+        tiles.append((item, tile_w, tile_h, cutout))
+
+    tiles.sort(key=lambda t: t[1] * t[2], reverse=True)
+    placed_boxes: list[tuple[int, int, int, int]] = []
+    packed: list[tuple[dict[str, Any], tuple[int, int, int, int], int, int]] = []
+
+    for item, tile_w, tile_h, cutout in tiles:
+        margin = FRAME_EXPORT_MARGIN
+        if not placed_boxes:
+            left = int(round(cx - tile_w / 2))
+            top = int(round(cy - tile_h / 2))
+            left = max(margin, min(FRAME_W - margin - tile_w, left))
+            top = max(margin, min(FRAME_H - margin - tile_h, top))
+            box = (left, top, left + tile_w, top + tile_h)
+        else:
+            box = _find_open_slot(tile_w, tile_h, placed_boxes, cx, cy)
+            if box is None:
+                return None
+        placed_boxes.append(box)
+        packed.append((item, box, tile_w, tile_h))
+
+    return packed
 
 
 def export_frame_jpg(
@@ -122,38 +201,44 @@ def export_frame_jpg(
         return False
 
     max_n = max(r["n"] for r in rows)
-    canvas = Image.new("RGB", (FRAME_W, FRAME_H), FRAME_BG)
-    cx, cy = FRAME_W / 2, FRAME_H / 2
-    base = min(FRAME_W, FRAME_H) * 0.34
-    budget = FRAME_W * FRAME_H * 0.52
-    scores = [math.pow(r["n"], 0.55) for r in rows]
-    score_sum = sum(scores) or 1.0
-
-    placed: list[tuple[int, int, int, int]] = []
-    for idx, (row, score) in enumerate(zip(rows, scores)):
-        area = budget * (score / score_sum)
-        cutout = _load_cutout(row["path"], max_side=round(base * 2.2))
+    prepared: list[dict[str, Any]] = []
+    base_side = min(FRAME_W, FRAME_H) * 0.28
+    for row in rows:
+        cutout = _load_cutout(row["path"], max_side=round(base_side))
         if cutout is None:
             continue
-        ar = cutout.width / max(cutout.height, 1)
-        tile_h = max(80, round(math.sqrt(area / max(ar, 0.4))))
-        tile_w = max(60, round(tile_h * ar))
-        x, y = _spiral_xy(idx, len(rows), cx, cy, min(FRAME_W, FRAME_H) * 0.36)
-        left = int(round(x - tile_w / 2))
-        top = int(round(y - tile_h / 2))
-        left = max(20, min(FRAME_W - tile_w - 20, left))
-        top = max(20, min(FRAME_H - tile_h - 20, top))
-        box = (left, top, left + tile_w, top + tile_h)
-        overlap = any(not (box[2] < b[0] or box[0] > b[2] or box[3] < b[1] or box[1] > b[3]) for b in placed)
-        if overlap:
-            left = int(round(cx - tile_w / 2 + (idx % 5 - 2) * tile_w * 0.12))
-            top = int(round(cy - tile_h / 2 + (idx // 5 - 2) * tile_h * 0.12))
-            left = max(20, min(FRAME_W - tile_w - 20, left))
-            top = max(20, min(FRAME_H - tile_h - 20, top))
-            box = (left, top, left + tile_w, top + tile_h)
-        fitted = cutout.resize((tile_w, tile_h), Image.Resampling.LANCZOS)
+        prepared.append({**row, "im": cutout})
+
+    if not prepared:
+        log.info("Frame export skipped: no readable cutouts")
+        return False
+
+    packed = None
+    for area_scale in (1.0, 0.88, 0.76, 0.65, 0.55, 0.46):
+        packed = _pack_tiles(prepared, area_scale)
+        if packed is not None:
+            break
+
+    if packed is None:
+        # Drop smallest birds until a non-overlapping layout fits.
+        trimmed = prepared[:]
+        while len(trimmed) > 3 and packed is None:
+            trimmed.pop()
+            for area_scale in (0.88, 0.76, 0.65, 0.55):
+                packed = _pack_tiles(trimmed, area_scale)
+                if packed is not None:
+                    break
+
+    if packed is None:
+        log.warning("Frame export failed: could not pack %d birds without overlap", len(prepared))
+        return False
+
+    canvas = Image.new("RGB", (FRAME_W, FRAME_H), FRAME_BG)
+    for item, box, tile_w, tile_h in packed:
+        left, top = box[0], box[1]
+        fitted = item["im"].resize((tile_w, tile_h), Image.Resampling.LANCZOS)
         canvas.paste(fitted, (left, top), fitted.getchannel("A"))
-        placed.append(box)
+    rows = [{"sci": item["sci"], "com": item["com"], "n": item["n"]} for item, *_ in packed]
 
     FRAME_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     tmp = _output_path().with_suffix(".jpg.part")
@@ -236,7 +321,7 @@ def start_frame_export_loop(
 
     threading.Thread(target=loop, name="frame-export", daemon=True).start()
     log.info(
-        "Frame export enabled -> %s (%dx%d, every %ds, %sh window)",
+        "Frame export enabled -> %s (%dx%d, every %ds, %s window)",
         FRAME_EXPORT_DIR,
         FRAME_W,
         FRAME_H,
